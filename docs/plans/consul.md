@@ -1,6 +1,6 @@
 # Plan: Consul, an open-weight critic model
 
-Revision: 2026-11-08 r1 (planning only; training is future work, not scheduled)
+Revision: 2026-11-10 r2 (base changed to the dense Qwen3-4B-Instruct-2507; the data, training and eval pipeline is implemented in this repository, nothing has been trained yet)
 
 **Consul** is Emperor's counterweight. Emperor (Imperium's orchestrator model, plan in the
 Imperium repository at `docs/plans/emperor.md`) turns vague prompts into elaborate plans and
@@ -32,11 +32,11 @@ Provisional until baselines are measured (stage 3). Each is checked by the eval 
 
 | ID | Goal | Verified by |
 | -- | ---- | ----------- |
-| C1 | On a held-out set of plans with seeded defects, Consul finds ≥ 80 % of the acceptance-changing defects, with ≤ 15 % of its acceptance-changing findings being false | `eval --metric defects` |
+| C1 | On a held-out set of plans, diffs and reports with seeded defects, Consul finds ≥ 80 % of the acceptance-changing defects, with ≤ 15 % of its acceptance-changing findings being false | `eval --metric defects` |
 | C2 | ≥ 90 % of findings that cite precedent cite a source that exists and supports the claim | `eval --metric citations` (judge plus link check) |
 | C3 | Every finding has location, impact, confidence, and a fix or check, in the critic result format; output validates against the schema | `eval --metric format` |
 | C4 | In multi-round critic loops (triage then improvement pass), Consul's delta reviews converge: no repeated or reversed findings on ≥ 90 % of loops | `eval --suite loop` |
-| C5 | Runs on the CPU from system RAM: the default build (Qwen3-30B-A3B class, Q4_K_M) fits a 64 GB machine beside Emperor's caches and produces a typical critique within its time budget | measured run with Imperium's CPU lane (Emperor plan stage 2f) |
+| C5 | Fits the machine: the default build (Qwen3-4B-Instruct-2507, Q4_K_M or Q8_0 GGUF) runs on the CPU from system RAM, or on the GPU or split between them, beside Emperor, and produces a typical critique within its time budget | measured run with Imperium's CPU lane (Emperor plan stage 2f) and a GPU or partial-GPU run |
 | C6 | Weights, quants, card, eval report, and recipe on Hugging Face under Apache-2.0, every teacher permitted (Emperor plan's teacher table) | Hub pages; datasheet |
 
 ## Fit with the Agent-Custom-Workflow critic loop
@@ -67,21 +67,41 @@ justifications, so it has to challenge the plan from the outside, as the workflo
 author" rule intends. Only if no subagent can run at all does it fall back to the workflow's
 disclosed self-check. This fallback is Imperium work and is recorded in the Emperor plan.
 
-## Stages (future work)
+## Implementation status
+
+The pipeline lives in this repository and reuses Emperor's package (a pinned git dependency)
+for the idle gate, local teacher client, shards, bf16 LoRA training and merge, GGUF export and
+model cards. Consul adds only what is critic-specific:
+
+- the critique result schema (`consul.schema`) and Consul's system prompt (`consul.prompts`);
+- seeded-defect tasks (`consul.tasks`): plans, diffs and agent reports from several task
+  classes with injected defects whose ground truth is recorded; about one task in six is clean;
+- the teacher critique step, the schema, citation and ground-truth checks, and the local judge
+  (`consul.data`); a critique is kept only if it finds every seeded defect, raises no false
+  blocking finding, cites only provided URLs, and the judge approves;
+- the held-out harness (`uv run eval`) for C1 (recall and false findings), C3 (format) and a
+  simple C2 (a cited URL must appear in the provided context). C4 is a TODO. The held-out set
+  uses another seed range and held-out vocabulary and is checked for overlap with the
+  training tasks before every run.
+
+Not yet done: baselines, any training run, the CPU-lane measurement for C5, delta-review and
+rebuttal rounds (C4), real (non-synthetic) plans and diffs, and web-research tool calls.
+
+## Stages
 
 1. **Contract.** Reuse Imperium's exported tool schemas (Emperor plan stage 1) and add the
    critic result schema and Consul's root prompt, including the Machiavelli personality slot.
 2. **Eval harness.** Seeded-defect plans and diffs, a citation checker, and loop replays
    (C1–C4), sharing infrastructure with the Emperor harness where possible.
-3. **Baselines.** Zero-shot candidates (Qwen3-30B-A3B class first; other Apache-2.0/MIT MoE
-   models with small active parameters) measured on C1–C5 on the CPU.
+3. **Baselines.** Zero-shot Qwen3-4B-Instruct-2507 (and other small Apache-2.0/MIT dense
+   models) measured on C1–C5, on the CPU and the GPU.
 4. **Dataset.** Critique trajectories from permitted teachers running the workflow's critic
    loop on real Imperium plans and diffs, with web research tool calls; seeded-defect
    variants; rebuttal and delta-review rounds; negative examples (unsupported claims,
    anchoring, invented citations) rewritten correctly.
-5. **Training.** QLoRA on the base. A 30B MoE does not fit the 16 GB GPU for training as
-   comfortably as Emperor's 4B: measure first, and if local training is impossible, record it
-   as blocked on compute rather than renting silently.
+5. **Training.** bf16 LoRA on the full-precision 4B weights, exactly Emperor's recipe (no
+   QLoRA, no 4/8-bit loading); quantise only after training. The 4B trains locally on the
+   16 GB GPU, with partial offload to system RAM when another process holds some VRAM.
 6. **Packaging and integration.** GGUF quants for CPU inference, the Imperium CPU-lane catalog
    entry, and the default `critique` routing.
 7. **Release.** Hugging Face (`Imperium.AI/consul`, placeholder organisation) and docs.
@@ -90,5 +110,5 @@ disclosed self-check. This fallback is Imperium work and is recorded in the Empe
 
 | Question | Owner |
 | -------- | ----- |
-| Can a 30B MoE be QLoRA-trained locally on 16 GB VRAM plus 64 GB RAM, or does Consul need a smaller dense base? | Stage 3 measurement |
+| ~~Can a 30B MoE be QLoRA-trained locally?~~ Decided: no. A 30B MoE cannot be bf16-LoRA-trained on 16 GB, so the base is the dense Qwen3-4B-Instruct-2507. Revisit only if baselines show 4B is too weak for C1. | Stage 3 measurement |
 | Which search providers Consul's training sessions use, and their terms | Maintainers |
