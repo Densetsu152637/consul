@@ -33,10 +33,12 @@ class ConsulPipeline(Pipeline):
         own,
         eval_tasks: int = 60,
         eval_seed: int = data.HELDOUT_SEED_OFFSET,
+        generate_effort: str = data.GENERATE_EFFORT,
     ):
         super().__init__(settings, gate, own)
         self.eval_tasks = eval_tasks
         self.eval_seed = eval_seed
+        self.generate_effort = generate_effort
 
     def phase_prompts(self) -> dict:
         """Training tasks, then the held-out set checked against them."""
@@ -47,9 +49,11 @@ class ConsulPipeline(Pipeline):
 
     def _teacher_work(self, kind: str):
         def work(server, should_stop):
+            # Generation's reasoning becomes the student's thinking, so it is kept short;
+            # the judge keeps the pipeline's `--reasoning-effort`.
+            effort = self.generate_effort if kind == "generate" else self.s.reasoning_effort
             client = ChatClient(
-                f"http://127.0.0.1:{self.s.teacher_port}/v1",
-                reasoning_effort=self.s.reasoning_effort,
+                f"http://127.0.0.1:{self.s.teacher_port}/v1", reasoning_effort=effort
             )
             try:
                 if kind == "generate":
@@ -96,10 +100,17 @@ class ConsulPipeline(Pipeline):
 
 
 def split_extra(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
-    """Consul's own options (held-out size and seed), and the line without them."""
+    """Consul's own options (held-out size and seed, the teacher's reasoning effort when it
+    writes critiques), and the line without them."""
     extra = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     extra.add_argument("--eval-tasks", type=int, default=60, help="held-out tasks to generate")
     extra.add_argument("--eval-seed", type=int, default=data.HELDOUT_SEED_OFFSET)
+    extra.add_argument(
+        "--generate-reasoning-effort",
+        default=data.GENERATE_EFFORT,
+        choices=["low", "medium", "high"],
+        help="teacher reasoning effort for critiques (its reasoning is what the student learns)",
+    )
     known, rest = extra.parse_known_args(argv)
     return known, rest
 
@@ -119,7 +130,14 @@ def main(argv: list[str] | None = None) -> int:
         return base.detach(argv, run_dir, MODULE)
 
     def factory(settings, gate, own):
-        return ConsulPipeline(settings, gate, own, known.eval_tasks, known.eval_seed)
+        return ConsulPipeline(
+            settings,
+            gate,
+            own,
+            known.eval_tasks,
+            known.eval_seed,
+            known.generate_reasoning_effort,
+        )
 
     return base.main(
         rest,

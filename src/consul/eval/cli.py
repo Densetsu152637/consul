@@ -3,6 +3,8 @@
 `--dry-run` answers every task with the reference critique built from the ground truth, so the
 harness runs without a model; it must score perfectly and is how the metrics are tested. Without
 it the model behind an OpenAI-compatible endpoint (llama-server) is asked, locally, task by task.
+Consul is a thinking model: its `<think>` block is removed before the answer is scored, and
+`--max-tokens` leaves room for the reasoning as well as the critique.
 Before any scoring the held-out set is checked against the training tasks and the run refuses
 if they overlap.
 """
@@ -22,6 +24,8 @@ from consul.overlap import DEFAULT_THRESHOLD, overlap_report
 from consul.score import reference_critique
 from consul.tasks import CritiqueTask
 
+DEFAULT_MAX_TOKENS = 16384  # room to reason first; Emperor's 4096 can cut a critique off
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="eval", description=__doc__.strip().splitlines()[0])
@@ -31,6 +35,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--train-data", type=Path, default=Path("data/prompts.jsonl"))
     parser.add_argument("--overlap-threshold", type=float, default=DEFAULT_THRESHOLD)
     parser.add_argument("--context-tier", choices=list(CONTEXT_TIERS), default="32k")
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=DEFAULT_MAX_TOKENS,
+        help="completion budget per task, reasoning included",
+    )
     parser.add_argument("--dry-run", action="store_true", help="answer with the reference critique")
     parser.add_argument("--output", type=Path, help="write the JSON report here")
     return parser
@@ -71,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
 
         backend = "replay"
     else:
-        answer = model_answer(OpenAICompatModel(args.base_url, name))
+        answer = model_answer(OpenAICompatModel(args.base_url, name, max_tokens=args.max_tokens))
         backend = "llamacpp"
     report = run_suite(
         tasks,

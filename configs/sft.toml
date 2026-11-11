@@ -2,12 +2,12 @@
 # Paths are relative to the repository root unless absolute. The base is read-only.
 
 [model]
-base = "D:/AI-Models/unsloth/Qwen3-4B-Instruct-2507"
+base = "D:/AI-Models/unsloth/Qwen3-4B-Thinking-2507"
 attn_implementation = "sdpa"  # flash-attn has no Windows wheel
 
 [data]
 path = "data/final/final.jsonl"
-max_length = 4096  # critiques are short; lower if the 16 GB card runs out of memory
+max_length = 6144  # prompt + teacher reasoning + critique; longer samples are dropped, not cut
 val_fraction = 0.05
 split_seed = 1337
 
@@ -42,10 +42,10 @@ output_dir = "weights/consul-4b-bf16"
 name = "consul-4b"  # weights/consul-4b-gguf/, consul-4b-<TYPE>.gguf
 title = "Consul"
 summary = """Consul is an open-weight critic for Imperium. Given a plan, a diff or an agent \
-report, it returns ranked findings (location, impact, confidence, fix or check) and a verdict \
-as one JSON object in a strict result schema."""
+report, it reasons in a thinking block, then returns ranked findings (location, impact, \
+confidence, fix or check) and a verdict as one JSON object in a strict result schema."""
 eval_alias = "consul"
-tags = ["imperium", "critic", "code-review", "lora", "qwen3"]
+tags = ["imperium", "critic", "code-review", "lora", "qwen3", "reasoning"]
 gguf_types = ["Q8_0", "Q6_K", "Q4_K_M"]
 context_tokens = 32768
 intended_use = [
@@ -62,6 +62,7 @@ teacher = "gpt-oss-20b"
 teacher_licence = "Apache-2.0"
 judge = "gpt-oss-20b (local, 1-5 on five criteria), plus a deterministic ground-truth check"
 filters = [
+  "the teacher's reasoning is present; it is trained as the model's thinking, the judge sees only the critique",
   "output parses and validates against the critique schema",
   "every cited URL appears in the task's provided sources",
   "all seeded acceptance-changing defects found and no false blocking findings",

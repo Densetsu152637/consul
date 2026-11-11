@@ -16,7 +16,14 @@ from consul import data, prompts
 from consul.eval.cli import main as eval_main
 from consul.overlap import OverlapIndex, overlap_report
 from consul.pipeline.cli import ConsulPipeline
-from consul.schema import citation_errors, extract_json_object, schema_errors
+from consul.schema import (
+    CritiqueParseError,
+    citation_errors,
+    extract_answer,
+    extract_json_object,
+    schema_errors,
+    strip_thinking,
+)
 from consul.score import anchor_hit, reference_critique, score_critique
 from consul.tasks import CritiqueTask, generate_tasks, make_task
 
@@ -145,9 +152,10 @@ def test_train_tasks_append_and_resume(tmp_path):
 class StubTeacher:
     """Answers critiques with the reference critique (good), judge calls with a pass."""
 
-    def __init__(self, tasks, garble=()):
+    def __init__(self, tasks, garble=(), silent=()):
         self.by_text = {prompts.user_message(t): t for t in tasks}
         self.garble = set(garble)
+        self.silent = set(silent)  # answer well, but with no reasoning
         self.calls = 0
 
     def chat(self, messages, **kwargs):
@@ -158,26 +166,30 @@ class StubTeacher:
             return {"content": json.dumps({"scores": scores, "pass": True, "reason": "ok"})}
         task = self.by_text[user]
         if task.id in self.garble:
-            return {"content": "I think it is fine."}
-        return {"content": json.dumps(reference_critique(task))}
+            return {"content": "I think it is fine.", "reasoning_content": "Looks fine."}
+        reasoning = "" if task.id in self.silent else f"Check {task.id} step by step."
+        return {"content": json.dumps(reference_critique(task)), "reasoning_content": reasoning}
 
 
 def test_generate_judge_filter_end_to_end(tmp_path):
     data.write_train_tasks(tmp_path, 40, 1)
     tasks = data.load_tasks(tmp_path / "prompts.jsonl")
-    broken = tasks[0].id
-    teacher = StubTeacher(tasks, garble=[broken])
+    broken, silent = tasks[0].id, tasks[1].id
+    teacher = StubTeacher(tasks, garble=[broken], silent=[silent])
     counts = data.run_generation(tmp_path, teacher)
-    assert counts["accepted"] == 39 and counts["rejected"] == 1
+    assert counts["accepted"] == 38 and counts["rejected"] == 2
     assert data.run_generation(tmp_path, teacher)["todo"] == 0  # resumable
     judged = data.run_judging(tmp_path, teacher)
-    assert judged["judged"] == 39 and judged["kept"] == 39
+    assert judged["judged"] == 38 and judged["kept"] == 38
     final = data.filter_kept(tmp_path)
-    assert final["kept"] == 39
+    assert final["kept"] == 38 and final["no_reasoning"] == 0
     report = data.write_report(tmp_path)
-    assert report["generation_rejection_reasons"] == {"unparsable": 1}
+    assert report["generation_rejection_reasons"] == {"unparsable": 1, "empty_reasoning": 1}
     sample = json.loads((tmp_path / "final" / "final.jsonl").read_text().splitlines()[0])
     assert [m["role"] for m in sample["messages"]] == ["system", "user", "assistant"]
+    answer = sample["messages"][-1]
+    assert answer["reasoning_content"] == f"Check {sample['id']} step by step."
+    assert "step by step" not in answer["content"]  # the critique alone, as the judge sees it
     assert sample["messages"][0]["content"] == prompts.CONSUL_SYSTEM  # no teacher guidance
     assert "keywords" not in json.dumps(sample["messages"])  # ground truth stays out
 
@@ -193,7 +205,8 @@ def test_judging_drops_critiques_that_miss_a_defect(tmp_path):
                 self.by_text[messages[1]["content"]].id == target.id
             ):
                 return {
-                    "content": json.dumps({"verdict": "accept", "summary": "ok", "findings": []})
+                    "content": json.dumps({"verdict": "accept", "summary": "ok", "findings": []}),
+                    "reasoning_content": "Nothing stands out.",
                 }
             return super().chat(messages, **kwargs)
 
@@ -231,7 +244,7 @@ def test_consul_config_is_emperors_recipe_with_consul_names():
     config = load_config(ROOT / "configs" / "sft.toml")
     assert config.merge.output_dir == "weights/consul-4b-bf16"
     assert config.release.name == "consul-4b" and config.release.eval_alias == "consul"
-    assert config.model.base.endswith("Qwen3-4B-Instruct-2507")
+    assert config.model.base.endswith("Qwen3-4B-Thinking-2507")
 
 
 def make_pipeline(root: Path, **kwargs) -> ConsulPipeline:
@@ -269,6 +282,9 @@ def test_pipeline_cli_dispatch_and_extra_options():
 
     known, rest = split_extra(["--detach", "--eval-tasks", "9", "--asleep", "--eval-seed=5"])
     assert (known.eval_tasks, known.eval_seed, rest) == (9, 5, ["--detach", "--asleep"])
+    assert known.generate_reasoning_effort == "low"
+    known, rest = split_extra(["--generate-reasoning-effort", "high", "--reasoning-effort", "low"])
+    assert known.generate_reasoning_effort == "high" and rest == ["--reasoning-effort", "low"]
 
 
 def test_prompt_example_is_a_valid_critique():
@@ -276,3 +292,69 @@ def test_prompt_example_is_a_valid_critique():
 
     assert schema_errors(CRITIQUE_EXAMPLE) == []
     assert '"verdict": "revise"' in prompts.CONSUL_SYSTEM
+
+
+class EffortRecorder:
+    """Records each client's reasoning effort, and answers nothing (no tasks are pending)."""
+
+    efforts: list = []
+
+    def __init__(self, base_url, reasoning_effort=None, **kwargs):
+        EffortRecorder.efforts.append(reasoning_effort)
+
+    def close(self):
+        pass
+
+
+def test_generation_uses_its_own_reasoning_effort_and_judging_the_pipelines(tmp_path, monkeypatch):
+    import consul.pipeline.cli as cli
+
+    monkeypatch.setattr(cli, "ChatClient", EffortRecorder)
+    EffortRecorder.efforts = []
+    pipeline = make_pipeline(tmp_path, reasoning_effort="high")
+    pipeline._teacher_work("generate")(None, lambda: False)
+    pipeline._teacher_work("judge")(None, lambda: False)
+    assert EffortRecorder.efforts == ["low", "high"]
+
+
+def test_teacher_reply_without_reasoning_is_rejected():
+    task = generate_tasks(1, 7)[0]
+
+    class Teacher:
+        def __init__(self, reasoning):
+            self.reasoning = reasoning
+
+        def chat(self, messages, **kwargs):
+            critique = json.dumps(reference_critique(task))
+            return {"content": critique, "reasoning_content": self.reasoning}
+
+    for empty in (None, "", "  \n"):
+        assert data.teach_one(task, Teacher(empty)) == (None, "empty_reasoning")
+    sample, reason = data.teach_one(task, Teacher(" Weigh step 3. "))
+    assert reason is None
+    assert sample["messages"][-1]["reasoning_content"] == "Weigh step 3."
+
+
+def test_thinking_is_stripped_before_the_answer_is_parsed():
+    critique = {"verdict": "accept", "summary": "ok", "findings": []}
+    answer = json.dumps(critique)
+    thought = 'Maybe {"verdict": "reject"} fits? No: {nested {braces}} are only thoughts.'
+    assert extract_answer(f"<think>\n{thought}\n</think>\n\n{answer}") == critique
+    # The Thinking template opens the block in the prompt: only the closing tag comes back.
+    assert extract_answer(f"{thought}\n</think>\n{answer}") == critique
+    assert extract_answer(answer) == critique  # no thinking at all
+    # Cut off mid-thought: no answer is left, so nothing from the reasoning is scored.
+    assert strip_thinking(f"<think>\n{thought}") == ""
+    with pytest.raises(CritiqueParseError):
+        extract_answer(f"<think>\n{thought}")
+    with pytest.raises(CritiqueParseError):
+        extract_answer(f"{thought}\n</think>\n")
+
+
+def test_eval_scores_a_thinking_models_answer(tmp_path):
+    from consul.eval.report import run_task
+
+    task = generate_tasks(1, 3)[0]
+    reply = "<think>{not json} weigh it</think>" + json.dumps(reference_critique(task))
+    score, error = run_task(task, lambda _: reply)
+    assert error is None and score.format_ok and not score.missed

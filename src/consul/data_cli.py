@@ -30,6 +30,11 @@ def build_parser() -> argparse.ArgumentParser:
         p = sub.add_parser(name)
         p.add_argument("--base-url", default="http://127.0.0.1:8081/v1")
         p.add_argument("--limit", type=int)
+        p.add_argument(
+            "--reasoning-effort",
+            default=data.GENERATE_EFFORT if name == "generate" else "medium",
+            choices=["low", "medium", "high"],
+        )
         if name == "judge":
             p.add_argument("--threshold", type=float, default=data.JUDGE_MEAN)
     sub.add_parser("filter")
@@ -47,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command in ("generate", "judge"):
         from emperor.data.teacher import ChatClient
 
-        client = ChatClient(args.base_url)
+        client = ChatClient(args.base_url, reasoning_effort=args.reasoning_effort)
         try:
             if args.command == "generate":
                 result = data.run_generation(d, client, limit=args.limit, log=print)
