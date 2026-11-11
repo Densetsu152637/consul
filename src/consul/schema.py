@@ -149,6 +149,28 @@ def urls_in(text: str) -> set[str]:
     return {u.rstrip(".,;") for u in _URL.findall(text)}
 
 
+CRITIQUE_EXAMPLE = {
+    "verdict": "revise",
+    "summary": "Step 3 deletes the backup before Step 5 checks that the restore worked.",
+    "findings": [
+        {
+            "id": "f1",
+            "severity": "acceptance_changing",
+            "location": "Step 3",
+            "impact": "If the restore fails there is no backup left to retry from.",
+            "confidence": "high",
+            "basis": "check",
+            "fix_or_check": "Delete the backup only after Step 5 confirms the restore.",
+        }
+    ],
+}
+
+
 def schema_prompt() -> str:
-    """The format, spelled out for the system prompt."""
-    return json.dumps(CRITIQUE_SCHEMA, indent=1)
+    """The format, spelled out for the system prompt: an example answer, then the schema. Shown
+    the schema alone, the teacher often answered with the schema itself."""
+    return (
+        f"Example answer:\n{json.dumps(CRITIQUE_EXAMPLE, indent=1)}\n\n"
+        "Every field, as a JSON Schema (it describes your answer; never repeat it):\n"
+        f"{json.dumps(CRITIQUE_SCHEMA, indent=1)}"
+    )

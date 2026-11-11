@@ -269,3 +269,10 @@ def test_pipeline_cli_dispatch_and_extra_options():
 
     known, rest = split_extra(["--detach", "--eval-tasks", "9", "--asleep", "--eval-seed=5"])
     assert (known.eval_tasks, known.eval_seed, rest) == (9, 5, ["--detach", "--asleep"])
+
+
+def test_prompt_example_is_a_valid_critique():
+    from consul.schema import CRITIQUE_EXAMPLE
+
+    assert schema_errors(CRITIQUE_EXAMPLE) == []
+    assert '"verdict": "revise"' in prompts.CONSUL_SYSTEM
