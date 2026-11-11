@@ -37,7 +37,7 @@ publish = ["huggingface_hub>=0.30"]
 
 [tool.uv.sources]
 # Pinned to the merge commit of the entrypoint-dispatch PR (after release tooling); bump it deliberately.
-emperor = { git = "https://github.com/Densetsu152637/emperor", rev = "1e9227097443a8cbd8b1e00b63b5a6c6de641d95" }
+emperor = { git = "https://github.com/Densetsu152637/emperor", rev = "65bc20a732bd27707fcb5e12acc12acf848b24df" }
 torch = { index = "pytorch-cu128", marker = "sys_platform == 'win32' or sys_platform == 'linux'" }
 
 [[tool.uv.index]]
