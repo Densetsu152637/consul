@@ -99,6 +99,32 @@ def extract_json_object(text: str) -> dict:
     raise CritiqueParseError("unterminated JSON object")
 
 
+_THINK_OPEN, _THINK_CLOSE = "<think>", "</think>"
+
+
+def strip_thinking(text: str) -> str:
+    """The answer without the model's reasoning.
+
+    A thinking model writes `<think>...</think>` before its answer; the Qwen3 Thinking template
+    opens the block in the prompt, so the reply may carry only the closing tag. Everything up to
+    the last `</think>` is reasoning. A block opened but never closed (the model was cut off
+    mid-thought) is reasoning to the end, so no answer is left.
+    """
+    text = text or ""
+    close = text.rfind(_THINK_CLOSE)
+    if close >= 0:
+        text = text[close + len(_THINK_CLOSE) :]
+    opened = text.find(_THINK_OPEN)
+    if opened >= 0:
+        text = text[:opened]
+    return text.strip()
+
+
+def extract_answer(text: str) -> dict:
+    """The critique in a model's reply: its reasoning removed, then the first JSON object."""
+    return extract_json_object(strip_thinking(text))
+
+
 def schema_errors(critique: dict) -> list[str]:
     """Schema violations plus the rules the schema cannot express (empty means valid)."""
     errors = validate(critique, CRITIQUE_SCHEMA)

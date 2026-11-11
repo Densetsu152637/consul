@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 
 from emperor.eval.models import ModelError
 
-from consul.schema import CritiqueParseError, extract_json_object
+from consul.schema import CritiqueParseError, extract_answer
 from consul.score import CritiqueScore, score_critique
 from consul.tasks import CritiqueTask
 
@@ -29,7 +29,7 @@ def run_task(
     except ModelError as error:
         return score_critique(task, None), str(error)
     try:
-        critique = extract_json_object(text)
+        critique = extract_answer(text)
     except CritiqueParseError:
         critique = None
     return score_critique(task, critique), None

@@ -24,6 +24,8 @@ MIN_RECALL = 1.0
 MAX_FALSE_RATE = 0.0
 JUDGE_MEAN = 4.0
 JUDGE_MIN = 3
+# The teacher's reasoning is stored and becomes the student's thinking: low effort keeps it short.
+GENERATE_EFFORT = "low"
 
 
 # -- tasks ---------------------------------------------------------------------------------
@@ -81,7 +83,10 @@ def critique_text(critique: dict) -> str:
     return json.dumps(critique, indent=1, ensure_ascii=False)
 
 
-def make_sample(task: CritiqueTask, critique: dict) -> dict:
+def make_sample(task: CritiqueTask, critique: dict, reasoning: str) -> dict:
+    """A training sample. The assistant turn carries the teacher's reasoning as
+    `reasoning_content` beside the critique; Emperor's trainer renders it as the thinking
+    model's `<think>` block, so the student learns to reason before it critiques."""
     return {
         "id": task.id,
         "task_class": task.task_class,
@@ -89,7 +94,11 @@ def make_sample(task: CritiqueTask, critique: dict) -> dict:
         "messages": [
             {"role": "system", "content": prompts.CONSUL_SYSTEM},
             {"role": "user", "content": prompts.user_message(task)},
-            {"role": "assistant", "content": critique_text(critique)},
+            {
+                "role": "assistant",
+                "content": critique_text(critique),
+                "reasoning_content": reasoning,
+            },
         ],
         "meta": {
             "teacher": TEACHER_MODEL,
@@ -104,8 +113,9 @@ def make_sample(task: CritiqueTask, critique: dict) -> dict:
 def teach_one(
     task: CritiqueTask, teacher: Chat, *, temperature: float = 0.4
 ) -> tuple[dict | None, str | None]:
-    """One critique from the teacher, or (None, reason). Checks format and citations only;
-    the ground truth is applied at the judge step."""
+    """One critique from the teacher with its reasoning, or (None, reason). Checks format,
+    citations and that there is reasoning to learn from; the ground truth is applied at the
+    judge step."""
     reply = teacher.chat(
         [
             {"role": "system", "content": prompts.teacher_system()},
@@ -123,7 +133,10 @@ def teach_one(
         return None, "schema_invalid"
     if score_critique(task, critique).bad_citations:
         return None, "invented_citation"
-    return make_sample(task, critique), None
+    reasoning = (reply.get("reasoning_content") or "").strip()
+    if not reasoning:
+        return None, "empty_reasoning"
+    return make_sample(task, critique, reasoning), None
 
 
 def run_generation(
@@ -272,7 +285,7 @@ def filter_kept(data_dir: Path) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     target = out / "final.jsonl"
     seen: set[str] = set()
-    kept = dropped = 0
+    kept = dropped = no_reasoning = 0
     temporary = target.with_suffix(".tmp")
     with temporary.open("w", encoding="utf-8", newline="\n") as handle:
         for sample in iter_records(data_dir / "judged"):
@@ -284,11 +297,15 @@ def filter_kept(data_dir: Path) -> dict:
             if not judge.get("keep") or sample["id"] in seen or not valid:
                 dropped += 1
                 continue
+            if not (sample["messages"][-1].get("reasoning_content") or "").strip():
+                no_reasoning += 1  # from before reasoning was kept; a thinking model needs it
+                dropped += 1
+                continue
             seen.add(sample["id"])
             handle.write(json.dumps(sample, ensure_ascii=False, separators=(",", ":")) + "\n")
             kept += 1
     temporary.replace(target)
-    return {"kept": kept, "dropped": dropped, "path": str(target)}
+    return {"kept": kept, "dropped": dropped, "no_reasoning": no_reasoning, "path": str(target)}
 
 
 def build_report(data_dir: Path) -> dict:

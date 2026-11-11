@@ -1,6 +1,6 @@
 # Plan: Consul, an open-weight critic model
 
-Revision: 2026-11-10 r2 (base changed to the dense Qwen3-4B-Instruct-2507; the data, training and eval pipeline is implemented in this repository, nothing has been trained yet)
+Revision: 2026-11-12 r3 (base changed to the dense Qwen3-4B-Thinking-2507, trained on the teacher's reasoning so it thinks before it critiques; the data, training and eval pipeline is implemented in this repository, nothing has been trained yet)
 
 **Consul** is Emperor's counterweight. Emperor (Imperium's orchestrator model, plan in the
 Imperium repository at `docs/plans/emperor.md`) turns vague prompts into elaborate plans and
@@ -36,7 +36,7 @@ Provisional until baselines are measured (stage 3). Each is checked by the eval 
 | C2 | ≥ 90 % of findings that cite precedent cite a source that exists and supports the claim | `eval --metric citations` (judge plus link check) |
 | C3 | Every finding has location, impact, confidence, and a fix or check, in the critic result format; output validates against the schema | `eval --metric format` |
 | C4 | In multi-round critic loops (triage then improvement pass), Consul's delta reviews converge: no repeated or reversed findings on ≥ 90 % of loops | `eval --suite loop` |
-| C5 | Fits the machine: the default build (Qwen3-4B-Instruct-2507, Q4_K_M or Q8_0 GGUF) runs on the CPU from system RAM, or on the GPU or split between them, beside Emperor, and produces a typical critique within its time budget | measured run with Imperium's CPU lane (Emperor plan stage 2f) and a GPU or partial-GPU run |
+| C5 | Fits the machine: the default build (Qwen3-4B-Thinking-2507, Q4_K_M or Q8_0 GGUF) runs on the CPU from system RAM, or on the GPU or split between them, beside Emperor, and produces a typical critique within its time budget | measured run with Imperium's CPU lane (Emperor plan stage 2f) and a GPU or partial-GPU run |
 | C6 | Weights, quants, card, eval report, and recipe on Hugging Face under Apache-2.0, every teacher permitted (Emperor plan's teacher table) | Hub pages; datasheet |
 
 ## Fit with the Agent-Custom-Workflow critic loop
@@ -78,9 +78,12 @@ model cards. Consul adds only what is critic-specific:
   classes with injected defects whose ground truth is recorded; about one task in six is clean;
 - the teacher critique step, the schema, citation and ground-truth checks, and the local judge
   (`consul.data`); a critique is kept only if it finds every seeded defect, raises no false
-  blocking finding, cites only provided URLs, and the judge approves;
+  blocking finding, cites only provided URLs, the judge approves, and the teacher's reasoning
+  came with it. The reasoning is stored as `reasoning_content` and trained as the student's
+  thinking; the judge sees only the critique;
 - the held-out harness (`uv run eval`) for C1 (recall and false findings), C3 (format) and a
-  simple C2 (a cited URL must appear in the provided context). C4 is a TODO. The held-out set
+  simple C2 (a cited URL must appear in the provided context), scored on the answer after the
+  model's thinking is removed. C4 is a TODO. The held-out set
   uses another seed range and held-out vocabulary and is checked for overlap with the
   training tasks before every run.
 
@@ -93,7 +96,7 @@ rebuttal rounds (C4), real (non-synthetic) plans and diffs, and web-research too
    critic result schema and Consul's root prompt, including the Machiavelli personality slot.
 2. **Eval harness.** Seeded-defect plans and diffs, a citation checker, and loop replays
    (C1–C4), sharing infrastructure with the Emperor harness where possible.
-3. **Baselines.** Zero-shot Qwen3-4B-Instruct-2507 (and other small Apache-2.0/MIT dense
+3. **Baselines.** Zero-shot Qwen3-4B-Thinking-2507 (and other small Apache-2.0/MIT dense
    models) measured on C1–C5, on the CPU and the GPU.
 4. **Dataset.** Critique trajectories from permitted teachers running the workflow's critic
    loop on real Imperium plans and diffs, with web research tool calls; seeded-defect
@@ -110,5 +113,5 @@ rebuttal rounds (C4), real (non-synthetic) plans and diffs, and web-research too
 
 | Question | Owner |
 | -------- | ----- |
-| ~~Can a 30B MoE be QLoRA-trained locally?~~ Decided: no. A 30B MoE cannot be bf16-LoRA-trained on 16 GB, so the base is the dense Qwen3-4B-Instruct-2507. Revisit only if baselines show 4B is too weak for C1. | Stage 3 measurement |
+| ~~Can a 30B MoE be QLoRA-trained locally?~~ Decided: no. A 30B MoE cannot be bf16-LoRA-trained on 16 GB, so the base is the dense Qwen3-4B (now the Thinking-2507 variant). Revisit only if baselines show 4B is too weak for C1. | Stage 3 measurement |
 | Which search providers Consul's training sessions use, and their terms | Maintainers |
