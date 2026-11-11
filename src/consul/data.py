@@ -113,7 +113,7 @@ def teach_one(
         ],
         temperature=temperature,
         seed=task.seed,
-        max_tokens=3000,
+        max_tokens=8192,  # gpt-oss reasons first; 3000 often left no room for the answer
     )
     try:
         critique = extract_json_object(reply.get("content") or "")
@@ -245,7 +245,7 @@ def run_judging(
                 ],
                 temperature=0.0,
                 seed=task.seed,
-                max_tokens=1024,
+                max_tokens=4096,  # room for gpt-oss reasoning; 1024 often cut the verdict off
             )
             judge = parse_judge(reply.get("content") or "")
             keep, reasons = decide(truth, judge, threshold=threshold)
