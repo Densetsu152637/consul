@@ -71,7 +71,7 @@ VRAM and system RAM), `merge`, `export` (bf16 and Q8_0, Q6_K, Q4_K_M GGUF), `eva
 held-out harness against a `llama-server` started with `--fit on`), `card`. The idle gate, STOP file, pauses and options
 are those of Emperor's pipeline (see its README); `--prompts N` sets the training tasks,
 `--eval-tasks N` and `--eval-seed S` the held-out set, and `--generate-reasoning-effort`
-(default `low`, for short reasoning traces) the teacher's effort while it writes critiques. The
+(default `medium`; low gave too little reasoning to learn from) the teacher's effort while it writes critiques. The
 teacher is gpt-oss-120b; the judge is Qwen3.8-27B (`--judge-gguf`, another model family) on its own
 llama-server, never beside the teacher, at `--judge-reasoning-effort`, thinking unless
 `--no-judge-thinking`. Consul has no retry rounds.

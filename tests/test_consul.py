@@ -286,7 +286,7 @@ def test_pipeline_cli_dispatch_and_extra_options():
 
     known, rest = split_extra(["--detach", "--eval-tasks", "9", "--asleep", "--eval-seed=5"])
     assert (known.eval_tasks, known.eval_seed, rest) == (9, 5, ["--detach", "--asleep"])
-    assert known.generate_reasoning_effort == "low"
+    assert known.generate_reasoning_effort == "medium"
     known, rest = split_extra(["--generate-reasoning-effort", "high", "--reasoning-effort", "low"])
     assert known.generate_reasoning_effort == "high" and rest == ["--reasoning-effort", "low"]
 
@@ -319,7 +319,7 @@ def test_generation_runs_on_the_teacher_and_judging_on_the_thinking_judge(tmp_pa
     pipeline._generate_work(pipeline.s.data_dir)(None, lambda: False)
     pipeline._judge_work(pipeline.s.data_dir)(None, lambda: False)
     generate, judge = ClientRecorder.made
-    assert generate == {"reasoning_effort": "low", "slot": 0}
+    assert generate == {"reasoning_effort": "medium", "slot": 0}
     assert judge["model"] == "Qwen3.8-27B" and judge["reasoning_effort"] == "high"
     assert judge["template_kwargs"] == {"enable_thinking": True}
 

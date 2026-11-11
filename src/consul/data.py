@@ -31,8 +31,9 @@ MIN_RECALL = 1.0
 MAX_FALSE_RATE = 0.0
 JUDGE_MEAN = 4.0
 JUDGE_MIN = 3
-# The teacher's reasoning is stored and becomes the student's thinking: low effort keeps it short.
-GENERATE_EFFORT = "low"
+# The teacher's reasoning is stored and becomes the student's thinking. Low effort gave about 65
+# tokens of it in the pilot; medium about 330, and critiques stayed under 2.4k tokens.
+GENERATE_EFFORT = "medium"
 
 
 # -- tasks ---------------------------------------------------------------------------------
