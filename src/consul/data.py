@@ -10,8 +10,15 @@ from collections.abc import Callable
 from pathlib import Path
 
 from emperor.data.generate import Chat
+from emperor.data.judge import judge_answer
 from emperor.data.shards import ShardWriter, done_ids, iter_records, read_jsonl
-from emperor.data.teacher import TEACHER_LICENCE, TEACHER_MODEL, TeacherError, TeacherOutputError
+from emperor.data.teacher import (
+    JUDGE_MODEL,
+    TEACHER_LICENCE,
+    TEACHER_MODEL,
+    TeacherError,
+    TeacherOutputError,
+)
 
 from consul import prompts
 from consul.overlap import DEFAULT_THRESHOLD, OverlapIndex, overlap_report
@@ -228,6 +235,7 @@ def run_judging(
     limit: int | None = None,
     should_stop: Callable[[], bool] = lambda: False,
     log: Callable[[str], None] = lambda _: None,
+    model: str = JUDGE_MODEL,
 ) -> dict:
     writer = ShardWriter(data_dir / "judged", "judged")
     finished = done_ids(data_dir / "judged")
@@ -256,13 +264,13 @@ def run_judging(
                     {"role": "system", "content": prompts.JUDGE_SYSTEM},
                     {"role": "user", "content": prompts.judge_user(task, answer)},
                 ],
-                temperature=0.0,
+                temperature=0.6,  # the judge thinks first; greedy decoding can loop
                 seed=task.seed,
-                max_tokens=4096,  # room for gpt-oss reasoning; 1024 often cut the verdict off
+                max_tokens=12288,  # room for the judge's thinking before the verdict
             )
-            judge = parse_judge(reply.get("content") or "")
+            judge = parse_judge(judge_answer(reply))
             keep, reasons = decide(truth, judge, threshold=threshold)
-            verdict = {**judge, "model": TEACHER_MODEL, "keep": keep, "rejection": reasons}
+            verdict = {**judge, "model": model, "keep": keep, "rejection": reasons}
         except (TeacherOutputError, CritiqueParseError) as error:
             verdict = {"keep": False, "rejection": ["judge_unparseable"], "reason": str(error)}
         except TeacherError as error:

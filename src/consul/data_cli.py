@@ -37,6 +37,11 @@ def build_parser() -> argparse.ArgumentParser:
         )
         if name == "judge":
             p.add_argument("--threshold", type=float, default=data.JUDGE_MEAN)
+            p.add_argument(
+                "--no-judge-thinking",
+                action="store_true",
+                help="ask the judge (Qwen3.8-27B) to answer without thinking first",
+            )
     sub.add_parser("filter")
     sub.add_parser("report")
     return parser
@@ -50,9 +55,17 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "heldout":
         result = data.write_heldout(d, args.count, args.seed)
     elif args.command in ("generate", "judge"):
-        from emperor.data.teacher import ChatClient
+        from emperor.data.teacher import JUDGE_MODEL, ChatClient
 
-        client = ChatClient(args.base_url, reasoning_effort=args.reasoning_effort)
+        if args.command == "generate":
+            client = ChatClient(args.base_url, reasoning_effort=args.reasoning_effort)
+        else:  # the judge's own server, a different model from the teacher
+            client = ChatClient(
+                args.base_url,
+                model=JUDGE_MODEL,
+                reasoning_effort=args.reasoning_effort,
+                template_kwargs={"enable_thinking": not args.no_judge_thinking},
+            )
         try:
             if args.command == "generate":
                 result = data.run_generation(d, client, limit=args.limit, log=print)

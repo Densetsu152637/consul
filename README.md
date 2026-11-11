@@ -6,7 +6,7 @@ Training, evaluation, and export for **Consul**, an open-weight critic model for
 given a plan, a diff or an agent report, it returns ranked findings (location, impact,
 confidence, fix or check) and a verdict in a strict JSON result schema.
 
-The base is the dense **Qwen3-4B-Thinking-2507**, trained with a **bf16 LoRA** (no QLoRA, no
+The base is **Qwen3.5-4B** (Apache-2.0, thinking on by default; only its text model is trained), trained with a **bf16 LoRA** (no QLoRA, no
 4/8-bit) and quantised only after training, so it runs on the CPU from system RAM, on the GPU,
 or split between them. Consul thinks before it critiques: each training sample keeps the
 teacher's reasoning as `reasoning_content` on the assistant turn (Emperor's trainer renders it
@@ -48,7 +48,7 @@ repository root.
 ## Build the model
 
 Everything runs on this machine. No Claude, Anthropic or OpenAI API generates or judges data;
-the teacher is a local open-weight model (gpt-oss-20b, Apache-2.0) behind `llama-server`.
+the teacher (gpt-oss-120b, Apache-2.0) and the judge (Qwen3.8-27B) are local open-weight models behind `llama-server`.
 
 ```powershell
 # Start the whole build in the background (writes runs/<timestamp>/ and returns at once).
@@ -71,8 +71,10 @@ VRAM and system RAM), `merge`, `export` (bf16 and Q8_0, Q6_K, Q4_K_M GGUF), `eva
 held-out harness against a `llama-server` started with `--fit on`), `card`. The idle gate, STOP file, pauses and options
 are those of Emperor's pipeline (see its README); `--prompts N` sets the training tasks,
 `--eval-tasks N` and `--eval-seed S` the held-out set, and `--generate-reasoning-effort`
-(default `low`, for short reasoning traces) the teacher's effort while it writes critiques; the
-judge keeps `--reasoning-effort`.
+(default `low`, for short reasoning traces) the teacher's effort while it writes critiques. The
+teacher is gpt-oss-120b; the judge is Qwen3.8-27B (`--judge-gguf`, another model family) on its own
+llama-server, never beside the teacher, at `--judge-reasoning-effort`, thinking unless
+`--no-judge-thinking`. Consul has no retry rounds.
 
 Steps can also be run alone: `uv run data {tasks,heldout,generate,judge,filter,report}`,
 `uv run --group train train {show,fit,merge}`, `uv run release {export,card,publish}`.

@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import pytest
+from emperor.data.shards import ShardWriter, iter_records
 from emperor.pipeline.idle import IdleGate
 from emperor.pipeline.processes import OwnProcesses
 from emperor.pipeline.run import Settings
@@ -25,7 +26,7 @@ from consul.schema import (
     strip_thinking,
 )
 from consul.score import anchor_hit, reference_critique, score_critique
-from consul.tasks import CritiqueTask, generate_tasks, make_task
+from consul.tasks import CritiqueTask, dumps, generate_tasks, make_task
 
 ROOT = Path(__file__).parent.parent
 
@@ -244,7 +245,9 @@ def test_consul_config_is_emperors_recipe_with_consul_names():
     config = load_config(ROOT / "configs" / "sft.toml")
     assert config.merge.output_dir == "weights/consul-4b-bf16"
     assert config.release.name == "consul-4b" and config.release.eval_alias == "consul"
-    assert config.model.base.endswith("Qwen3-4B-Thinking-2507")
+    assert config.model.base.endswith("Qwen3.5-4B")
+    assert config.data.max_length == 8192
+    assert {"in_proj_qkv", "in_proj_z", "out_proj"} <= set(config.lora.target_modules)
 
 
 def make_pipeline(root: Path, **kwargs) -> ConsulPipeline:
@@ -274,7 +277,8 @@ def test_pipeline_runs_without_gpu_phases(tmp_path):
     )
     summary = pipeline.run()
     assert summary["status"] == "done" and summary["phases"]["prompts"]["status"] == "done"
-    assert summary["teacher"] == {"model": "gpt-oss-20b", "licence": "Apache-2.0"}
+    assert summary["teacher"] == {"model": "gpt-oss-120b", "licence": "Apache-2.0"}
+    assert summary["phases"]["retry"]["status"] == "skipped"
 
 
 def test_pipeline_cli_dispatch_and_extra_options():
@@ -294,27 +298,50 @@ def test_prompt_example_is_a_valid_critique():
     assert '"verdict": "revise"' in prompts.CONSUL_SYSTEM
 
 
-class EffortRecorder:
-    """Records each client's reasoning effort, and answers nothing (no tasks are pending)."""
+class ClientRecorder:
+    """Records how each client was made, and answers nothing (no tasks are pending)."""
 
-    efforts: list = []
+    made: list = []
 
     def __init__(self, base_url, reasoning_effort=None, **kwargs):
-        EffortRecorder.efforts.append(reasoning_effort)
+        ClientRecorder.made.append({"reasoning_effort": reasoning_effort, **kwargs})
 
     def close(self):
         pass
 
 
-def test_generation_uses_its_own_reasoning_effort_and_judging_the_pipelines(tmp_path, monkeypatch):
+def test_generation_runs_on_the_teacher_and_judging_on_the_thinking_judge(tmp_path, monkeypatch):
     import consul.pipeline.cli as cli
 
-    monkeypatch.setattr(cli, "ChatClient", EffortRecorder)
-    EffortRecorder.efforts = []
-    pipeline = make_pipeline(tmp_path, reasoning_effort="high")
-    pipeline._teacher_work("generate")(None, lambda: False)
-    pipeline._teacher_work("judge")(None, lambda: False)
-    assert EffortRecorder.efforts == ["low", "high"]
+    monkeypatch.setattr(cli, "ChatClient", ClientRecorder)
+    ClientRecorder.made = []
+    pipeline = make_pipeline(tmp_path, judge_reasoning_effort="high")
+    pipeline._generate_work(pipeline.s.data_dir)(None, lambda: False)
+    pipeline._judge_work(pipeline.s.data_dir)(None, lambda: False)
+    generate, judge = ClientRecorder.made
+    assert generate == {"reasoning_effort": "low", "slot": 0}
+    assert judge["model"] == "Qwen3.8-27B" and judge["reasoning_effort"] == "high"
+    assert judge["template_kwargs"] == {"enable_thinking": True}
+
+
+def test_the_judges_thinking_is_cut_before_its_verdict_is_parsed(tmp_path):
+    task = generate_tasks(1, 7)[0]
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "prompts.jsonl").write_text(dumps(task) + "\n", encoding="utf-8")
+    critique = reference_critique(task)
+    sample = data.make_sample(task, critique, "Weigh step 3.")
+    ShardWriter(data_dir / "traces", "traces").write(sample)
+    verdict = {"scores": dict.fromkeys(prompts.JUDGE_CRITERIA, 5), "pass": True, "reason": "ok"}
+
+    class Judge:
+        def chat(self, messages, **kwargs):
+            return {"content": '<think>{"scores": 1} is not it.</think>' + json.dumps(verdict)}
+
+    counts = data.run_judging(data_dir, Judge())
+    (judged,) = iter_records(data_dir / "judged")
+    assert counts["judged"] == 1 and judged["meta"]["judge"]["model"] == "Qwen3.8-27B"
+    assert judged["meta"]["judge"]["pass"] is True
 
 
 def test_teacher_reply_without_reasoning_is_rejected():
