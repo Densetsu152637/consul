@@ -40,8 +40,9 @@ Extra guidance for this review:
 - acceptance_changing means the artifact would fail its own goal or acceptance criteria,
   or a claim in it is false. A general policy among the sources that the goal and
   acceptance do not depend on (notice periods, review counts, deploy windows) is at most
-  an improvement. Before reporting a gap, check whether another step or claim already
-  covers it; if one does, it is not a finding.
+  an improvement: a plan that omits the on-call notice or the review count from a policy page
+  is an improvement finding, never acceptance_changing. Before reporting a gap, check
+  whether another step or claim already covers it; if one does, it is not a finding.
 """
 
 
