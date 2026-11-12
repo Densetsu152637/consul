@@ -631,7 +631,15 @@ def _report(rng: random.Random, seed: int, clean: bool) -> CritiqueTask:
     template, family = _pick(rng, REPORT_JOBS)
     fill = {"system": _pick(rng, _part(rng, SYSTEMS)), "a": _pick(rng, _part(rng, STORES))}
     job = template.format(**fill)
-    sources = _filler_sources(rng, 2)
+    # Claim 3 cites the vendor's guidance, so the task provides it: citing an unrelated
+    # policy page there was a real defect that the ground truth did not record.
+    guidance = _source(
+        rng,
+        f"{fill['a']} guidance",
+        f"Vendor guidance for {fill['a']}: use connection pooling and set a request "
+        "timeout on every client.",
+    )
+    sources = [guidance, *_filler_sources(rng, 2)]
     runs = rng.randrange(8, 60)
     before, after = rng.randrange(200, 900), rng.randrange(40, 190)
     claims = [
@@ -640,7 +648,8 @@ def _report(rng: random.Random, seed: int, clean: bool) -> CritiqueTask:
         [f"Measured the effect: {before} ms before, {after} ms after on the same input.",
          "Command: `python bench.py --repeat 20`, median of 20 runs, output attached."],
         [f"Followed the vendor guidance for {fill['a']}.", f"Source: {sources[0].url}"],
-        ["Verified the change locally against the staging data set.",
+        # Consistent with its evidence; the untested_claim defect overwrites it.
+        ["Verified the change locally with the test fixtures.",
          "local run with fixtures only; no shared environment used."],
     ]  # fmt: skip
     summary = f"Summary: the job is done; latency fell from {before} ms to {after} ms."

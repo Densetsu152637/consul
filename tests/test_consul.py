@@ -385,3 +385,14 @@ def test_eval_scores_a_thinking_models_answer(tmp_path):
     reply = "<think>{not json} weigh it</think>" + json.dumps(reference_critique(task))
     score, error = run_task(task, lambda _: reply)
     assert error is None and score.format_ok and not score.missed
+
+
+def test_a_clean_report_cites_a_provided_source_that_supports_its_claim():
+    for seed in range(40):
+        task = make_task(seed, kind="report", clean=True)
+        claim3 = next(line for line in task.artifact.splitlines() if "vendor guidance" in line)
+        evidence = task.artifact.splitlines()[task.artifact.splitlines().index(claim3) + 1]
+        cited = evidence.split("Source: ")[1].strip()
+        source = next(s for s in task.sources if s.url == cited)
+        assert "guidance" in source.title.lower() and source.text.startswith("Vendor guidance")
+        assert "staging data set" not in task.artifact

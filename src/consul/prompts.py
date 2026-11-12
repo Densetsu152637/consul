@@ -37,6 +37,11 @@ Extra guidance for this review:
   evidence and that every cited URL is among the provided sources.
 - Prefer few, certain findings over many doubtful ones. A sound artifact gets verdict "accept".
 - Locations must be exact: the step number, the claim number, the file:line, or the section.
+- acceptance_changing means the artifact would fail its own goal or acceptance criteria,
+  or a claim in it is false. A general policy among the sources that the goal and
+  acceptance do not depend on (notice periods, review counts, deploy windows) is at most
+  an improvement. Before reporting a gap, check whether another step or claim already
+  covers it; if one does, it is not a finding.
 """
 
 
