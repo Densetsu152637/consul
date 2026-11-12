@@ -396,3 +396,10 @@ def test_a_clean_report_cites_a_provided_source_that_supports_its_claim():
         source = next(s for s in task.sources if s.url == cited)
         assert "guidance" in source.title.lower() and source.text.startswith("Vendor guidance")
         assert "staging data set" not in task.artifact
+
+
+def test_every_seeded_diff_defect_has_a_line():
+    for seed in range(300):
+        task = make_task(seed, kind="diff", clean=False)
+        for defect in task.defects:
+            assert "LNone" not in defect.where, (seed, task.family)

@@ -426,7 +426,7 @@ def _t_average(rng, bug):
             *guard,
             "    return sum(values) / len(values)",
         ],
-        "bug": 3,
+        "bug": 2,  # the return line once the guard is gone (3 pointed past the end: L<None>)
         "keywords": ["empty", "zerodivision", "division by zero", "divide", "no values", "guard"],
         "description": "An empty list raises ZeroDivisionError instead of returning 0.0.",
     }
@@ -513,7 +513,9 @@ def _t_default(rng, bug):
     guard = [] if bug else ["    tags = [] if tags is None else tags"]
     return {
         "file": "tags.py",
-        "intent": "Attach a tag to an item, creating the list when none is given",
+        # Says what the code does (adds the item to the list): "attach a tag to an item" read
+        # as reversed parameters, a real defect in every task built from this template.
+        "intent": "Add an item to a tag list, creating the list when none is given",
         "lines": [sig, *guard, "    tags.append(item)", "    return tags"],
         "bug": 0,
         "keywords": ["mutable", "default", "shared", "state", "none"],
