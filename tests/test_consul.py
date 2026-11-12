@@ -195,7 +195,7 @@ def test_generate_judge_filter_end_to_end(tmp_path):
     assert "keywords" not in json.dumps(sample["messages"])  # ground truth stays out
 
 
-def test_judging_drops_critiques_that_miss_a_defect(tmp_path):
+def test_critiques_that_miss_a_defect_are_dropped_before_judging(tmp_path):
     data.write_train_tasks(tmp_path, 40, 1)
     tasks = data.load_tasks(tmp_path / "prompts.jsonl")
     target = next(t for t in tasks if not t.clean)
@@ -212,12 +212,14 @@ def test_judging_drops_critiques_that_miss_a_defect(tmp_path):
             return super().chat(messages, **kwargs)
 
     teacher = Lazy(tasks)
-    data.run_generation(tmp_path, teacher)
+    counts = data.run_generation(tmp_path, teacher)
+    assert counts["rejected"] == 1
+    (reject,) = data.iter_records(tmp_path / "rejects")
+    assert (reject["id"], reject["reason"]) == (target.id, "missed_defect")
     data.run_judging(tmp_path, teacher)
     kept = {s["id"] for s in data.iter_records(tmp_path / "judged") if s["meta"]["judge"]["keep"]}
     assert target.id not in kept and len(kept) == 39
-    reasons = data.build_report(tmp_path)["judge_rejection_reasons"]
-    assert reasons == {"missed_defect": 1}
+    assert data.build_report(tmp_path)["judge_rejection_reasons"] == {}
 
 
 def test_eval_dry_run_scores_perfectly_and_refuses_overlap(tmp_path, capsys):
@@ -403,3 +405,28 @@ def test_every_seeded_diff_defect_has_a_line():
         task = make_task(seed, kind="diff", clean=False)
         for defect in task.defects:
             assert "LNone" not in defect.where, (seed, task.family)
+
+
+def test_a_critique_that_misses_the_ground_truth_is_drawn_again():
+    task = generate_tasks(40, 1)
+    task = next(t for t in task if not t.clean)
+
+    class LazyOnce(StubTeacher):
+        def chat(self, messages, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                empty = {"verdict": "accept", "summary": "ok", "findings": []}
+                return {"content": json.dumps(empty), "reasoning_content": "Looks fine."}
+            self.calls -= 1
+            return super().chat(messages, **kwargs)
+
+    teacher = LazyOnce([task])
+    sample, reason = data.teach_one(task, teacher)
+    assert reason is None and sample["messages"][-1]["content"]
+    always_lazy = LazyOnce([task])
+    always_lazy.calls = -10  # every draw is the lazy one
+    always_lazy.chat = lambda messages, **kw: {
+        "content": json.dumps({"verdict": "accept", "summary": "ok", "findings": []}),
+        "reasoning_content": "Looks fine.",
+    }
+    assert data.teach_one(task, always_lazy) == (None, "missed_defect")

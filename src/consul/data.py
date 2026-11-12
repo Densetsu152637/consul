@@ -122,19 +122,44 @@ def make_sample(task: CritiqueTask, critique: dict, reasoning: str) -> dict:
     }
 
 
+GENERATE_ATTEMPTS = 3  # draws per task (new seed each) until one meets the ground truth
+ATTEMPT_SEED_STEP = 1_000_003
+
+
 def teach_one(
-    task: CritiqueTask, teacher: Chat, *, temperature: float = 0.4
+    task: CritiqueTask,
+    teacher: Chat,
+    *,
+    temperature: float = 0.4,
+    attempts: int = GENERATE_ATTEMPTS,
 ) -> tuple[dict | None, str | None]:
-    """One critique from the teacher with its reasoning, or (None, reason). Checks format,
-    citations and that there is reasoning to learn from; the ground truth is applied at the
-    judge step."""
+    """One critique from the teacher with its reasoning, or (None, reason).
+
+    A draw must parse, validate, cite only provided sources, carry reasoning and meet the
+    task's ground truth (every seeded acceptance-changing defect found, no false blocking
+    finding). Otherwise the teacher is asked again with another seed, up to `attempts` draws,
+    and the last reason is returned. Consul has no retry rounds, and in the pilots about half
+    of the critiques failed the ground truth only at the judge step, after the teacher time
+    was spent; the judge still decides on the rest.
+    """
+    reason = "no_attempt"
+    for attempt in range(attempts):
+        sample, reason = _draw(task, teacher, temperature, task.seed + attempt * ATTEMPT_SEED_STEP)
+        if sample is not None:
+            return sample, None
+    return None, reason
+
+
+def _draw(
+    task: CritiqueTask, teacher: Chat, temperature: float, seed: int
+) -> tuple[dict | None, str]:
     reply = teacher.chat(
         [
             {"role": "system", "content": prompts.teacher_system()},
             {"role": "user", "content": prompts.user_message(task)},
         ],
         temperature=temperature,
-        seed=task.seed,
+        seed=seed,
         max_tokens=8192,  # gpt-oss reasons first; 3000 often left no room for the answer
     )
     try:
@@ -143,12 +168,17 @@ def teach_one(
         return None, "unparsable"
     if schema_errors(critique):
         return None, "schema_invalid"
-    if score_critique(task, critique).bad_citations:
+    score = score_critique(task, critique)
+    if score.bad_citations:
         return None, "invented_citation"
     reasoning = (reply.get("reasoning_content") or "").strip()
     if not reasoning:
         return None, "empty_reasoning"
-    return make_sample(task, critique, reasoning), None
+    if score.recall is not None and score.recall < MIN_RECALL:
+        return None, "missed_defect"
+    if score.false_rate is not None and score.false_rate > MAX_FALSE_RATE:
+        return None, "false_finding"
+    return make_sample(task, critique, reasoning), ""
 
 
 def run_generation(
