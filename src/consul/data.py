@@ -34,6 +34,10 @@ JUDGE_MIN = 3
 # The teacher's reasoning is stored and becomes the student's thinking. Low effort gave about 65
 # tokens of it in the pilot; medium about 330, and critiques stayed under 2.4k tokens.
 GENERATE_EFFORT = "medium"
+# The judge answers without thinking first: on the pilot's ten critiques it kept and rejected
+# exactly the same ones as with thinking (scores within 0.6 a criterion) in 10 s instead
+# of 135 s a critique. The ground-truth check carries most of the decision.
+JUDGE_THINKING = False
 
 
 # -- tasks ---------------------------------------------------------------------------------

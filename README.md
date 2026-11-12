@@ -73,8 +73,9 @@ are those of Emperor's pipeline (see its README); `--prompts N` sets the trainin
 `--eval-tasks N` and `--eval-seed S` the held-out set, and `--generate-reasoning-effort`
 (default `medium`; low gave too little reasoning to learn from) the teacher's effort while it writes critiques. The
 teacher is gpt-oss-120b; the judge is Qwen3.8-27B (`--judge-gguf`, another model family) on its own
-llama-server, never beside the teacher, at `--judge-reasoning-effort`, thinking unless
-`--no-judge-thinking`. Consul has no retry rounds.
+llama-server, never beside the teacher, at `--judge-reasoning-effort`, thinking only with
+`--judge-thinking` (off by default for Consul: in a pilot its verdicts matched thinking on
+all ten critiques at a thirteenth of the time). Consul has no retry rounds.
 
 Steps can also be run alone: `uv run data {tasks,heldout,generate,judge,filter,report}`,
 `uv run --group train train {show,fit,merge}`, `uv run release {export,card,publish}`.

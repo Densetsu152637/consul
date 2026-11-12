@@ -34,11 +34,13 @@ class ConsulPipeline(Pipeline):
         eval_tasks: int = 60,
         eval_seed: int = data.HELDOUT_SEED_OFFSET,
         generate_effort: str = data.GENERATE_EFFORT,
+        judge_thinking: bool = data.JUDGE_THINKING,
     ):
         super().__init__(settings, gate, own)
         self.eval_tasks = eval_tasks
         self.eval_seed = eval_seed
         self.generate_effort = generate_effort
+        self.judge_thinking = judge_thinking
 
     def phase_prompts(self) -> dict:
         """Training tasks, then the held-out set checked against them."""
@@ -75,7 +77,7 @@ class ConsulPipeline(Pipeline):
                 f"http://127.0.0.1:{self.s.teacher_port}/v1",
                 model=JUDGE_MODEL,
                 reasoning_effort=self.s.judge_reasoning_effort,
-                template_kwargs={"enable_thinking": self.s.judge_thinking},
+                template_kwargs={"enable_thinking": self.judge_thinking},
             )
             try:
                 counts = data.run_judging(
@@ -134,6 +136,12 @@ def split_extra(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         choices=["low", "medium", "high"],
         help="teacher reasoning effort for critiques (its reasoning is what the student learns)",
     )
+    extra.add_argument(
+        "--judge-thinking",
+        action="store_true",
+        default=data.JUDGE_THINKING,
+        help="let the judge think before it answers (off: same verdicts, 13x faster)",
+    )
     known, rest = extra.parse_known_args(argv)
     return known, rest
 
@@ -160,6 +168,7 @@ def main(argv: list[str] | None = None) -> int:
             known.eval_tasks,
             known.eval_seed,
             known.generate_reasoning_effort,
+            known.judge_thinking,
         )
 
     return base.main(

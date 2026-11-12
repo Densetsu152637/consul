@@ -38,9 +38,10 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "judge":
             p.add_argument("--threshold", type=float, default=data.JUDGE_MEAN)
             p.add_argument(
-                "--no-judge-thinking",
+                "--judge-thinking",
                 action="store_true",
-                help="ask the judge (Qwen3.8-27B) to answer without thinking first",
+                default=data.JUDGE_THINKING,
+                help="let the judge (Qwen3.8-27B) think before it answers (slower)",
             )
     sub.add_parser("filter")
     sub.add_parser("report")
@@ -64,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.base_url,
                 model=JUDGE_MODEL,
                 reasoning_effort=args.reasoning_effort,
-                template_kwargs={"enable_thinking": not args.no_judge_thinking},
+                template_kwargs={"enable_thinking": args.judge_thinking},
             )
         try:
             if args.command == "generate":

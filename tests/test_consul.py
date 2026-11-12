@@ -321,7 +321,7 @@ def test_generation_runs_on_the_teacher_and_judging_on_the_thinking_judge(tmp_pa
     generate, judge = ClientRecorder.made
     assert generate == {"reasoning_effort": "medium", "slot": 0}
     assert judge["model"] == "Qwen3.8-27B" and judge["reasoning_effort"] == "high"
-    assert judge["template_kwargs"] == {"enable_thinking": True}
+    assert judge["template_kwargs"] == {"enable_thinking": False}
 
 
 def test_the_judges_thinking_is_cut_before_its_verdict_is_parsed(tmp_path):
