@@ -394,7 +394,7 @@ def test_a_clean_report_cites_a_provided_source_that_supports_its_claim():
         task = make_task(seed, kind="report", clean=True)
         claim3 = next(line for line in task.artifact.splitlines() if "vendor guidance" in line)
         evidence = task.artifact.splitlines()[task.artifact.splitlines().index(claim3) + 1]
-        cited = evidence.split("Source: ")[1].strip()
+        cited = evidence.split("Source: ")[1].split(";")[0].strip()
         source = next(s for s in task.sources if s.url == cited)
         assert "guidance" in source.title.lower() and source.text.startswith("Vendor guidance")
         assert "staging data set" not in task.artifact

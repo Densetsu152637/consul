@@ -35,6 +35,8 @@ Extra guidance for this review:
 - Read the artifact line by line and test each step or claim against the goal and the sources.
 - Compare numbers, orderings and references for consistency. Check that every claim has
   evidence and that every cited URL is among the provided sources.
+- Check the acceptance criteria themselves: each must be measurable or testable ("it works",
+  "nobody complains" are not).
 - Prefer few, certain findings over many doubtful ones. A sound artifact gets verdict "accept".
 - Locations must be exact: the step number, the claim number, the file:line, or the section.
 - acceptance_changing means the artifact would fail its own goal or acceptance criteria,

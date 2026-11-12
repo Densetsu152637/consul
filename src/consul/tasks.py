@@ -373,7 +373,23 @@ def _d_scope(rng, steps, acceptance, sources, fill):
     )
     return {
         "where": "@extra",
-        "keywords": ["scope", "unrelated", "separate", "creep", "beyond", "out of"],
+        # Pilot 14: a critic called this step "unnecessary complexity" at the right location and
+        # was scored as missing it; the words a critic uses for scope creep are now accepted.
+        "keywords": [
+            "scope",
+            "unrelated",
+            "separate",
+            "creep",
+            "beyond",
+            "out of",
+            "unnecessary",
+            "not needed",
+            "not required",
+            "outside",
+            "not part of",
+            "irrelevant",
+            "distract",
+        ],
         "description": "A step unrelated to the goal.",
     }
 
@@ -661,7 +677,10 @@ def _report(rng: random.Random, seed: int, clean: bool) -> CritiqueTask:
          f"Ran `pytest -q`: {runs} passed in {rng.randrange(2, 30)}.{rng.randrange(10)}s."],
         [f"Measured the effect: {before} ms before, {after} ms after on the same input.",
          "Command: `python bench.py --repeat 20`, median of 20 runs, output attached."],
-        [f"Followed the vendor guidance for {fill['a']}.", f"Source: {sources[0].url}"],
+        # Concrete evidence: "followed the guidance" with only a link was a claim without
+        # evidence, which critics rightly flagged in clean reports (pilots 10, 11 and 14).
+        [f"Followed the vendor guidance for {fill['a']}: pool size 20, 5 s request timeout.",
+         f"Source: {sources[0].url}; config diff attached."],
         # Consistent with its evidence; the untested_claim defect overwrites it.
         ["Verified the change locally with the test fixtures.",
          "local run with fixtures only; no shared environment used."],
