@@ -237,13 +237,16 @@ IMPROVEMENT_PLAN = {
 def _plan(rng: random.Random, seed: int, clean: bool) -> CritiqueTask:
     name = _pick(rng, sorted(PLAN_FAMILIES))
     family = PLAN_FAMILIES[name]
+    # An embedded store is no candidate for thousands of writes a second across nodes: in pilot 14
+    # critics rightly objected to SQLite in every research plan that listed it.
+    stores = [s for s in _part(rng, STORES) if not (name == "research" and s == "SQLite")]
     fill = {
         "system": _pick(rng, _part(rng, SYSTEMS)),
-        "a": _pick(rng, _part(rng, STORES)),
+        "a": _pick(rng, stores),
         "n": rng.randrange(3, 60),
         "team": _pick(rng, _part(rng, TEAMS)),
     }
-    fill["b"] = _pick(rng, [s for s in _part(rng, STORES) if s != fill["a"]])
+    fill["b"] = _pick(rng, [s for s in stores if s != fill["a"]])
     steps = [[role, text.format(**fill)] for role, text in family["steps"].items()]
     acceptance = [line.format(**fill) for line in family["acceptance"]]
     sources = _filler_sources(rng, 2)

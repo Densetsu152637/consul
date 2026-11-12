@@ -430,3 +430,10 @@ def test_a_critique_that_misses_the_ground_truth_is_drawn_again():
         "reasoning_content": "Looks fine.",
     }
     assert data.teach_one(task, always_lazy) == (None, "missed_defect")
+
+
+def test_research_plans_do_not_offer_an_embedded_store():
+    for seed in range(200):
+        task = make_task(seed, kind="plan")
+        if task.family == "research":
+            assert "SQLite" not in task.artifact
