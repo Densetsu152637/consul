@@ -117,10 +117,17 @@ def _source(rng: random.Random, topic: str, body: str) -> Source:
 def _filler_sources(rng: random.Random, count: int) -> list[Source]:
     topics = [
         ("backups", "Backups run nightly and are kept for {n} days; restores are tested monthly."),
-        ("deploy windows", "Production deploys are allowed on weekdays before {n}:00 local time."),
-        ("code review", "Every change needs {n} approving review(s) before it can be merged."),
+        # Background facts, not obligations: as rules ("deploys only before 11:00", "N approving
+        # reviews", "tell on-call N hours ahead") no artefact mentioned them, and the critic
+        # flagged the gap as blocking in most plan and report tasks (pilots 6-12) while the ground
+        # truth counted it false. The sources still test evidence discipline as distractors.
+        (
+            "deploy pipeline",
+            "The deploy pipeline takes about {n} minutes from merge to production.",
+        ),
+        ("code review", "The team reviews about {n} pull requests a week."),
         ("secrets", "Secrets belong in the vault; the repository must never contain credentials."),
-        ("on-call", "The on-call engineer must be told {n} hours before a risky release."),
+        ("on-call", "The on-call rotation has {n} engineers and hands over every Monday."),
     ]
     chosen = rng.sample(topics, count)
     return [_source(rng, t, text.format(n=rng.randrange(2, 30))) for t, text in chosen]
