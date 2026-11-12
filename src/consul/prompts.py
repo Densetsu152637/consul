@@ -45,6 +45,9 @@ Extra guidance for this review:
   an improvement: a plan that omits the on-call notice or the review count from a policy page
   is an improvement finding, never acceptance_changing. Before reporting a gap, check
   whether another step or claim already covers it; if one does, it is not a finding.
+- Review what the artifact says, not what a later output might do. "The decision record may
+  omit X" is not a finding when the step or acceptance already requires X; flag a step only
+  when its text is wrong, missing or contradicted.
 """
 
 
