@@ -132,6 +132,7 @@ def teach_one(
     *,
     temperature: float = 0.4,
     attempts: int = GENERATE_ATTEMPTS,
+    notes: list | None = None,
 ) -> tuple[dict | None, str | None]:
     """One critique from the teacher with its reasoning, or (None, reason).
 
@@ -140,18 +141,21 @@ def teach_one(
     finding). Otherwise the teacher is asked again with another seed, up to `attempts` draws,
     and the last reason is returned. Consul has no retry rounds, and in the pilots about half
     of the critiques failed the ground truth only at the judge step, after the teacher time
-    was spent; the judge still decides on the rest.
+    was spent; the judge still decides on the rest. `notes`, when given, collects what each
+    failed draw got wrong (finding locations and impacts), for the reject record.
     """
     reason = "no_attempt"
     for attempt in range(attempts):
-        sample, reason = _draw(task, teacher, temperature, task.seed + attempt * ATTEMPT_SEED_STEP)
+        sample, reason = _draw(
+            task, teacher, temperature, task.seed + attempt * ATTEMPT_SEED_STEP, notes
+        )
         if sample is not None:
             return sample, None
     return None, reason
 
 
 def _draw(
-    task: CritiqueTask, teacher: Chat, temperature: float, seed: int
+    task: CritiqueTask, teacher: Chat, temperature: float, seed: int, notes: list | None = None
 ) -> tuple[dict | None, str]:
     reply = teacher.chat(
         [
@@ -174,6 +178,17 @@ def _draw(
     reasoning = (reply.get("reasoning_content") or "").strip()
     if not reasoning:
         return None, "empty_reasoning"
+    if notes is not None and (score.missed or score.false_findings):
+        notes.append(
+            {
+                "missed": score.missed,
+                "false": [
+                    f"{f['location']}: {f['impact'][:160]}"
+                    for f in critique["findings"]
+                    if f["id"] in score.false_findings
+                ],
+            }
+        )
     if score.recall is not None and score.recall < MIN_RECALL:
         return None, "missed_defect"
     if score.false_rate is not None and score.false_rate > MAX_FALSE_RATE:
@@ -201,7 +216,8 @@ def run_generation(
             counts["stopped"] = True
             break
         try:
-            sample, reason = teach_one(task, teacher)
+            notes: list = []
+            sample, reason = teach_one(task, teacher, notes=notes)
         except TeacherOutputError:
             sample, reason = None, "teacher_output_unparsable"
         except TeacherError as error:
@@ -213,7 +229,10 @@ def run_generation(
             traces.write(sample)
             counts["accepted"] += 1
         else:
-            rejects.write({"id": task.id, "task_class": task.task_class, "reason": reason})
+            record = {"id": task.id, "task_class": task.task_class, "reason": reason}
+            if notes:
+                record["draws"] = notes
+            rejects.write(record)
             counts["rejected"] += 1
         log(f"{task.id} {'ok' if sample else reason}")
     return counts
