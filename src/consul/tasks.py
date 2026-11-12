@@ -195,22 +195,27 @@ PLAN_FAMILIES: dict[str, dict] = {
         },
     },
     "research": {
-        "title": "Choose a queue for the {system}",
-        "goal": "Pick a message queue for the {system} that sustains {n}k messages a second "
+        # Candidates are data stores ({a}, {b}), so the task is about a store: as a queue choice
+        # the critic rightly objected that relational databases are not queues. Running cost is
+        # measured, as the acceptance requires; without it every task carried an unrecorded
+        # acceptance-changing gap.
+        "title": "Choose a data store for the {system}",
+        "goal": "Pick a data store for the {system} that sustains {n}k writes a second "
         "and can be run by the {team} team.",
         "acceptance": [
-            "Each candidate is benchmarked on the same {n}k msg/s workload",
+            "Each candidate is benchmarked on the same {n}k writes/s workload",
             "The recommendation lists operating cost and failure behaviour per candidate",
             "A decision record names the choice and what would change it",
         ],
         "steps": {
-            "prep": "Write down the workload: message size, ordering needs and retention.",
-            "backup": "Record the current queue's metrics for a baseline.",
+            "prep": "Write down the workload: record size, consistency needs and retention.",
+            "backup": "Record the current store's metrics for a baseline.",
             "change1": "Stand up three candidates ({a}, {b} and one more) in a test cluster.",
-            "change2": "Run the same load test against each and record throughput and loss.",
-            "verify": "Kill a node during the test and note recovery time and message loss.",
+            "change2": "Run the same load test against each and record throughput, errors and "
+            "the cluster's running cost.",
+            "verify": "Kill a node during the test and note recovery time and data loss.",
             "release": "Write the decision record and review it with the {team} team.",
-            "rollback": "Keep the current queue in place until the decision is approved.",
+            "rollback": "Keep the current store in place until the decision is approved.",
             "cleanup": "Archive the test cluster configuration.",
         },
     },
