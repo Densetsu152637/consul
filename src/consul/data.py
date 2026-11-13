@@ -38,6 +38,26 @@ GENERATE_EFFORT = "medium"
 # exactly the same ones as with thinking (scores within 0.6 a criterion) in 10 s instead
 # of 135 s a critique. The ground-truth check carries most of the decision.
 JUDGE_THINKING = False
+# Judge sampling: Qwen's recommended 0.6 while it thinks (greedy decoding can loop inside a long
+# think block); near-greedy when the verdict is the whole answer, for repeatable scores.
+JUDGE_TEMPERATURE = {True: 0.6, False: 0.2}
+
+
+def model_name(gguf: str | Path) -> str:
+    """The name recorded for a served GGUF: its file name without `.gguf`, so a sample names the
+    exact weights and quantisation that produced or judged it."""
+    name = str(gguf).replace("\\", "/").rsplit("/", 1)[-1]
+    return name[: -len(".gguf")] if name.lower().endswith(".gguf") else name
+
+
+def served_model(client) -> str | None:
+    """The model a running llama-server reports at /v1/models, as `model_name` records it."""
+    try:
+        response = client._http.get(f"{client.base_url}/models")
+        response.raise_for_status()
+        return model_name(response.json()["data"][0]["id"])
+    except Exception:
+        return None
 
 
 # -- tasks ---------------------------------------------------------------------------------
@@ -95,7 +115,9 @@ def critique_text(critique: dict) -> str:
     return json.dumps(critique, indent=1, ensure_ascii=False)
 
 
-def make_sample(task: CritiqueTask, critique: dict, reasoning: str) -> dict:
+def make_sample(
+    task: CritiqueTask, critique: dict, reasoning: str, teacher_model: str = TEACHER_MODEL
+) -> dict:
     """A training sample. The assistant turn carries the teacher's reasoning as
     `reasoning_content` beside the critique; Emperor's trainer renders it as the thinking
     model's `<think>` block, so the student learns to reason before it critiques."""
@@ -113,7 +135,7 @@ def make_sample(task: CritiqueTask, critique: dict, reasoning: str) -> dict:
             },
         ],
         "meta": {
-            "teacher": TEACHER_MODEL,
+            "teacher": teacher_model,
             "licence": TEACHER_LICENCE,
             "seed": task.seed,
             "host": "local llama.cpp",
@@ -133,6 +155,7 @@ def teach_one(
     temperature: float = 0.4,
     attempts: int = GENERATE_ATTEMPTS,
     notes: list | None = None,
+    teacher_model: str = TEACHER_MODEL,
 ) -> tuple[dict | None, str | None]:
     """One critique from the teacher with its reasoning, or (None, reason).
 
@@ -146,16 +169,29 @@ def teach_one(
     """
     reason = "no_attempt"
     for attempt in range(attempts):
-        sample, reason = _draw(
-            task, teacher, temperature, task.seed + attempt * ATTEMPT_SEED_STEP, notes
-        )
+        try:
+            sample, reason = _draw(
+                task,
+                teacher,
+                temperature,
+                task.seed + attempt * ATTEMPT_SEED_STEP,
+                notes,
+                teacher_model,
+            )
+        except TeacherOutputError:  # one unparsable output costs this draw, not the task's rest
+            sample, reason = None, "teacher_output_unparsable"
         if sample is not None:
             return sample, None
     return None, reason
 
 
 def _draw(
-    task: CritiqueTask, teacher: Chat, temperature: float, seed: int, notes: list | None = None
+    task: CritiqueTask,
+    teacher: Chat,
+    temperature: float,
+    seed: int,
+    notes: list | None = None,
+    teacher_model: str = TEACHER_MODEL,
 ) -> tuple[dict | None, str]:
     reply = teacher.chat(
         [
@@ -193,7 +229,7 @@ def _draw(
         return None, "missed_defect"
     if score.false_rate is not None and score.false_rate > MAX_FALSE_RATE:
         return None, "false_finding"
-    return make_sample(task, critique, reasoning), ""
+    return make_sample(task, critique, reasoning, teacher_model), ""
 
 
 def run_generation(
@@ -203,6 +239,7 @@ def run_generation(
     limit: int | None = None,
     should_stop: Callable[[], bool] = lambda: False,
     log: Callable[[str], None] = lambda _: None,
+    teacher_model: str = TEACHER_MODEL,
 ) -> dict:
     traces = ShardWriter(data_dir / "traces", "traces")
     rejects = ShardWriter(data_dir / "rejects", "rejects")
@@ -217,7 +254,7 @@ def run_generation(
             break
         try:
             notes: list = []
-            sample, reason = teach_one(task, teacher, notes=notes)
+            sample, reason = teach_one(task, teacher, notes=notes, teacher_model=teacher_model)
         except TeacherOutputError:
             sample, reason = None, "teacher_output_unparsable"
         except TeacherError as error:
@@ -290,7 +327,11 @@ def run_judging(
     should_stop: Callable[[], bool] = lambda: False,
     log: Callable[[str], None] = lambda _: None,
     model: str = JUDGE_MODEL,
+    thinking: bool | None = None,
 ) -> dict:
+    """`thinking` defaults to the client's `enable_thinking` template option."""
+    if thinking is None:
+        thinking = bool(getattr(client, "template_kwargs", {}).get("enable_thinking", True))
     writer = ShardWriter(data_dir / "judged", "judged")
     finished = done_ids(data_dir / "judged")
     tasks = {t.id: t for t in load_tasks(data_dir / "prompts.jsonl")}
@@ -318,9 +359,9 @@ def run_judging(
                     {"role": "system", "content": prompts.JUDGE_SYSTEM},
                     {"role": "user", "content": prompts.judge_user(task, answer)},
                 ],
-                temperature=0.6,  # the judge thinks first; greedy decoding can loop
+                temperature=JUDGE_TEMPERATURE[thinking],
                 seed=task.seed,
-                max_tokens=12288,  # room for the judge's thinking before the verdict
+                max_tokens=12288,  # room for any thinking before the verdict
             )
             judge = parse_judge(judge_answer(reply))
             keep, reasons = decide(truth, judge, threshold=threshold)

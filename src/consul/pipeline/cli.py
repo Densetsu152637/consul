@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 from emperor.data.shards import done_ids, iter_records
-from emperor.data.teacher import JUDGE_MODEL, ChatClient
+from emperor.data.teacher import ChatClient
 from emperor.pipeline import cli as base
 from emperor.pipeline.run import TEACHER_SLOT, Pipeline
 
@@ -42,6 +42,9 @@ class ConsulPipeline(Pipeline):
         self.generate_effort = generate_effort
         self.judge_thinking = judge_thinking
 
+    def thinks(self) -> bool:
+        return self.judge_thinking and self.s.judge_thinking
+
     def phase_prompts(self) -> dict:
         """Training tasks, then the held-out set checked against them."""
         result = data.write_train_tasks(self.s.data_dir, self.s.prompts, self.s.seed)
@@ -61,7 +64,11 @@ class ConsulPipeline(Pipeline):
             )
             try:
                 counts = data.run_generation(
-                    directory, client, should_stop=should_stop, log=log.debug
+                    directory,
+                    client,
+                    should_stop=should_stop,
+                    log=log.debug,
+                    teacher_model=data.model_name(self.s.teacher_gguf),
                 )
             finally:
                 client.close()
@@ -70,14 +77,16 @@ class ConsulPipeline(Pipeline):
         return work
 
     def _judge_work(self, directory: Path):
-        """Ground-truth and judge checks on the judge's own server (Qwen3.8-27B, thinking)."""
+        """Ground-truth and judge checks on the judge's own server (Qwen3.8-27B). It thinks only
+        with `--judge-thinking`, and never with Emperor's `--no-judge-thinking`."""
 
         def work(server, should_stop):
+            judge = data.model_name(self.s.judge_gguf)  # the weights this phase serves
             client = ChatClient(
                 f"http://127.0.0.1:{self.s.teacher_port}/v1",
-                model=JUDGE_MODEL,
+                model=judge,
                 reasoning_effort=self.s.judge_reasoning_effort,
-                template_kwargs={"enable_thinking": self.judge_thinking},
+                template_kwargs={"enable_thinking": self.thinks()},
             )
             try:
                 counts = data.run_judging(
@@ -86,7 +95,7 @@ class ConsulPipeline(Pipeline):
                     threshold=self.s.threshold,
                     should_stop=should_stop,
                     log=log.debug,
-                    model=JUDGE_MODEL,
+                    model=judge,
                 )
             finally:
                 client.close()

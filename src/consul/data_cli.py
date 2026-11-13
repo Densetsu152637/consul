@@ -56,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "heldout":
         result = data.write_heldout(d, args.count, args.seed)
     elif args.command in ("generate", "judge"):
-        from emperor.data.teacher import JUDGE_MODEL, ChatClient
+        from emperor.data.teacher import JUDGE_MODEL, TEACHER_MODEL, ChatClient
 
         if args.command == "generate":
             client = ChatClient(args.base_url, reasoning_effort=args.reasoning_effort)
@@ -68,11 +68,20 @@ def main(argv: list[str] | None = None) -> int:
                 template_kwargs={"enable_thinking": args.judge_thinking},
             )
         try:
+            # Recorded as whatever the running server reports.
+            served = data.served_model(client)
             if args.command == "generate":
-                result = data.run_generation(d, client, limit=args.limit, log=print)
+                result = data.run_generation(
+                    d, client, limit=args.limit, log=print, teacher_model=served or TEACHER_MODEL
+                )
             else:
                 result = data.run_judging(
-                    d, client, threshold=args.threshold, limit=args.limit, log=print
+                    d,
+                    client,
+                    threshold=args.threshold,
+                    limit=args.limit,
+                    log=print,
+                    model=served or JUDGE_MODEL,
                 )
         finally:
             client.close()

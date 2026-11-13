@@ -322,8 +322,21 @@ def test_generation_runs_on_the_teacher_and_judging_on_the_thinking_judge(tmp_pa
     pipeline._judge_work(pipeline.s.data_dir)(None, lambda: False)
     generate, judge = ClientRecorder.made
     assert generate == {"reasoning_effort": "medium", "slot": 0}
-    assert judge["model"] == "Qwen3.8-27B" and judge["reasoning_effort"] == "high"
+    assert judge["model"] == "Qwen3.8-27B-UD-Q4_K_XL"  # named from the GGUF it serves
+    assert judge["reasoning_effort"] == "high"
     assert judge["template_kwargs"] == {"enable_thinking": False}
+
+
+def test_judge_thinking_needs_the_flag_and_obeys_no_judge_thinking(tmp_path):
+    for name in "abc":
+        (tmp_path / name).mkdir()
+    on = make_pipeline(tmp_path / "a")
+    on.judge_thinking = True  # --judge-thinking
+    assert on.thinks()
+    off = make_pipeline(tmp_path / "b", judge_thinking=False)  # Emperor's --no-judge-thinking
+    off.judge_thinking = True
+    assert not off.thinks()
+    assert not make_pipeline(tmp_path / "c").thinks()  # Consul's default: no thinking
 
 
 def test_the_judges_thinking_is_cut_before_its_verdict_is_parsed(tmp_path):
@@ -344,6 +357,36 @@ def test_the_judges_thinking_is_cut_before_its_verdict_is_parsed(tmp_path):
     (judged,) = iter_records(data_dir / "judged")
     assert counts["judged"] == 1 and judged["meta"]["judge"]["model"] == "Qwen3.8-27B"
     assert judged["meta"]["judge"]["pass"] is True
+
+
+def test_judge_temperature_follows_thinking(tmp_path):
+    task = generate_tasks(1, 7)[0]
+    verdict = {"scores": dict.fromkeys(prompts.JUDGE_CRITERIA, 5), "pass": True, "reason": "ok"}
+
+    class Judge:
+        def __init__(self, thinking):
+            self.template_kwargs = {"enable_thinking": thinking}
+            self.seen = []
+
+        def chat(self, messages, **kwargs):
+            self.seen.append(kwargs["temperature"])
+            return {"content": json.dumps(verdict)}
+
+    for thinking, temperature in ((False, 0.2), (True, 0.6)):
+        data_dir = tmp_path / str(thinking)
+        data_dir.mkdir()
+        (data_dir / "prompts.jsonl").write_text(dumps(task) + "\n", encoding="utf-8")
+        sample = data.make_sample(task, reference_critique(task), "Weigh step 3.")
+        ShardWriter(data_dir / "traces", "traces").write(sample)
+        judge = Judge(thinking)
+        data.run_judging(data_dir, judge)
+        assert judge.seen == [temperature]
+
+
+def test_model_names_come_from_the_served_gguf():
+    assert data.model_name("D:/m/Qwen3.8-27B-UD-Q4_K_XL.gguf") == "Qwen3.8-27B-UD-Q4_K_XL"
+    assert data.model_name(r"F:\m\gpt-oss-120b-F16.gguf") == "gpt-oss-120b-F16"
+    assert data.model_name("Qwen3.8-27B") == "Qwen3.8-27B"
 
 
 def test_teacher_reply_without_reasoning_is_rejected():
@@ -430,6 +473,22 @@ def test_a_critique_that_misses_the_ground_truth_is_drawn_again():
         "reasoning_content": "Looks fine.",
     }
     assert data.teach_one(task, always_lazy) == (None, "missed_defect")
+
+
+def test_an_unparsable_output_costs_one_draw_not_the_task():
+    from emperor.data.teacher import TeacherOutputError
+
+    task = next(t for t in generate_tasks(40, 1) if not t.clean)
+
+    class BadOnce(StubTeacher):
+        def chat(self, messages, **kwargs):
+            if not getattr(self, "failed", False):
+                self.failed = True
+                raise TeacherOutputError("server rejected the output 3 times")
+            return super().chat(messages, **kwargs)
+
+    sample, reason = data.teach_one(task, BadOnce([task]))
+    assert reason is None and sample is not None
 
 
 def test_research_plans_do_not_offer_an_embedded_store():
