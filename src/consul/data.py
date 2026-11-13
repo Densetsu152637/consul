@@ -9,6 +9,7 @@ from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
+from emperor.data.build import provenance
 from emperor.data.generate import Chat
 from emperor.data.judge import judge_answer
 from emperor.data.parallel import run_items
@@ -463,8 +464,8 @@ def build_report(data_dir: Path) -> dict:
         "kept_by_class": dict(sorted(kept_by_class.items())),
         "judged_by_class": dict(sorted(judged_by_class.items())),
         "judge_rejection_reasons": dict(rejection.most_common()),
-        "teacher": TEACHER_MODEL,
-        "licence": TEACHER_LICENCE,
+        # Read from the samples, so the card names the models that actually served.
+        **provenance([*traces, *judged]),
     }
 
 

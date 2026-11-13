@@ -279,7 +279,10 @@ def test_pipeline_runs_without_gpu_phases(tmp_path):
     )
     summary = pipeline.run()
     assert summary["status"] == "done" and summary["phases"]["prompts"]["status"] == "done"
-    assert summary["teacher"] == {"model": "gpt-oss-120b", "licence": "Apache-2.0"}
+    assert summary["teacher"] == {
+        "model": "deepseek-v4-pro",
+        "licence": "DeepSeek Open Platform Terms of Service",
+    }
     assert summary["phases"]["retry"]["status"] == "skipped"
 
 

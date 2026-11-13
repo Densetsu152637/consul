@@ -65,9 +65,11 @@ limits = [
   "It cites only the sources it is given and cannot search the web by itself in this version.",
   "Delta-review loops (goal C4) are not yet trained or evaluated.",
 ]
-teacher = "gpt-oss-120b"
-teacher_licence = "Apache-2.0"
-judge = "Qwen3.8-27B (local, another model family than the teacher; 1-5 on five criteria), plus a deterministic ground-truth check"
+# Used only when the dataset report does not name them (the card reads them from the samples).
+teacher = "deepseek-v4-pro"
+teacher_licence = "DeepSeek Open Platform Terms of Service"
+teacher_policy = "DeepSeek's outputs are used under section 4.2 of the DeepSeek Open Platform Terms of Service, which assigns the outputs to the user and lists \"training other models (such as model distillation)\" among the permitted uses (https://cdn.deepseek.com/policies/en-US/deepseek-open-platform-terms-of-service.html)."
+judge = "kimi-k3.1-pro (Moonshot API, another model family than the teacher; 1-5 on five criteria), plus a deterministic ground-truth check"
 filters = [
   "the teacher's reasoning is present; it is trained as the model's thinking, the judge sees only the critique",
   "output parses and validates against the critique schema",

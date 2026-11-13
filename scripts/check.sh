@@ -13,5 +13,6 @@ uv run data --data-dir "$tmp" tasks --count 60 > /dev/null
 uv run data --data-dir "$tmp" heldout --count 10 > /dev/null
 uv run eval --tasks "$tmp/eval/heldout.jsonl" --train-data "$tmp/prompts.jsonl" --dry-run > /dev/null
 uv run pipeline --help > /dev/null
+uv run hosted --help > /dev/null
 uv run train show > /dev/null
 uv run release --help > /dev/null
