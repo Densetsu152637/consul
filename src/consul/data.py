@@ -152,7 +152,10 @@ def make_sample(
     }
 
 
-GENERATE_ATTEMPTS = 3  # draws per task (new seed each) until one meets the ground truth
+# Draws per task (new seed each) until one meets the ground truth. Two: in hosted pilot 4 the
+# first draw passed for 6 tasks and the second for 1; the third rescued none, and every task
+# that failed all three paid for it.
+GENERATE_ATTEMPTS = 2
 ATTEMPT_SEED_STEP = 1_000_003
 
 

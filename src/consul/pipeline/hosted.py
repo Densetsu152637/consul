@@ -3,7 +3,7 @@
 prompts (training tasks and the held-out set) -> generate (DeepSeek critiques, checked against
 each task's seeded defects) -> judge (Kimi) -> filter -> report. Same options, status file,
 budget caps and resume as Emperor's `hosted`; see its module and `configs/hosted.toml`.
-Consul has no retry rounds: each task already gets up to three draws.
+Consul has no retry rounds: each task already gets up to two draws.
 """
 
 import sys
