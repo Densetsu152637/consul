@@ -47,8 +47,27 @@ repository root.
 
 ## Build the model
 
-Everything runs on this machine. No Claude, Anthropic or OpenAI API generates or judges data;
-the teacher (gpt-oss-120b, Apache-2.0) and the judge (Qwen3.8-27B) are local open-weight models behind `llama-server`.
+The data is made on hosted models by default: the teacher is `deepseek-v4-pro` (thinking) on
+DeepSeek's API and the judge `kimi-k3.1-pro` on Moonshot's, with Emperor's hosted runner
+(`configs/hosted.toml`: models, rates with their source pages, budget caps; keys from the OS
+credential store through `keyring`, service `emperor`, usernames `deepseek` and `moonshot`).
+DeepSeek's terms (Open Platform Terms of Service, section 4.2) allow using its outputs for
+"training other models (such as model distillation)". Training runs on this machine.
+
+```powershell
+uv run hosted --data-dir data/hosted-1 --run-dir runs/hosted-1 --detach   # start or resume
+Get-Content runs/hosted-1/status.json                                      # progress and spend
+New-Item runs/hosted-1/STOP                                                 # stop cleanly
+```
+
+Rule: DeepSeek generation runs only in its discounted off-peak hours (outside 01:00-04:00 and
+06:00-10:00 UTC on weekdays; all weekend). That is the default: at a peak boundary requests in
+flight finish, no new DeepSeek call starts, and the run resumes by itself (`status.json` shows
+phase `waiting_offpeak` and `resume_at_utc`). Peak hours need the explicit `--allow-peak`.
+
+The local fallback below (`pipeline`) runs everything on this machine: the teacher
+(gpt-oss-120b, Apache-2.0) and the judge (Qwen3.8-27B) are local open-weight models behind
+`llama-server`, and no Claude, Anthropic or OpenAI API generates or judges data either way.
 
 ```powershell
 # Start the whole build in the background (writes runs/<timestamp>/ and returns at once).

@@ -13,11 +13,14 @@ dependencies = ["emperor"]
 eval = "consul.eval.cli:main"
 data = "consul.data_cli:main"
 pipeline = "consul.pipeline.cli:main"
+hosted = "consul.pipeline.hosted:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.8"]
 # Synthetic data generation against a local llama-server (`uv run --group data data ...`).
 data = ["httpx>=0.27"]
+# Hosted teacher and judge (`uv run hosted ...`): API keys come from the OS credential store.
+hosted = ["keyring>=25"]
 # bf16 LoRA fine-tuning and merging. The torch wheel comes from the CUDA 12.8 index because
 # Blackwell cards (RTX 50 series) need cu128 or newer. Not synced by default: it is multi-GB.
 train = [
@@ -35,9 +38,13 @@ train = [
 # Uploading to the Hugging Face Hub (`uv run --group publish release publish --confirm ...`).
 publish = ["huggingface_hub>=0.30"]
 
+[tool.uv]
+# The light groups the tests use; train and publish stay opt-in.
+default-groups = ["dev", "data", "hosted"]
+
 [tool.uv.sources]
-# Pinned to the merge commit of emperor#16 (gpt-oss-120b teacher, Qwen3.8-27B judge); bump it deliberately.
-emperor = { git = "https://github.com/Densetsu152637/emperor", rev = "95a0bfda6cd11fbe060b3ab10d4867fc4ac049e8" }
+# Pinned to emperor's feat/hosted-models branch (hosted clients and runner); re-pin to its merge commit.
+emperor = { git = "https://github.com/Densetsu152637/emperor", rev = "d49ceada80143319ed66752f62e9a0d3796196e3" }
 torch = { index = "pytorch-cu128", marker = "sys_platform == 'win32' or sys_platform == 'linux'" }
 
 [[tool.uv.index]]
@@ -68,3 +75,4 @@ testpaths = ["tests"]
 eval = "consul.eval.cli:main"
 data = "consul.data_cli:main"
 pipeline = "consul.pipeline.cli:main"
+hosted = "consul.pipeline.hosted:main"

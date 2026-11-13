@@ -9,9 +9,12 @@ from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
+from emperor.data.build import provenance
 from emperor.data.generate import Chat
 from emperor.data.judge import judge_answer
-from emperor.data.shards import ShardWriter, done_ids, iter_records, read_jsonl
+from emperor.data.parallel import run_items
+from emperor.data.records import current, exclusions, fingerprint
+from emperor.data.shards import ShardWriter, read_jsonl
 from emperor.data.teacher import (
     JUDGE_MODEL,
     TEACHER_LICENCE,
@@ -116,7 +119,11 @@ def critique_text(critique: dict) -> str:
 
 
 def make_sample(
-    task: CritiqueTask, critique: dict, reasoning: str, teacher_model: str = TEACHER_MODEL
+    task: CritiqueTask,
+    critique: dict,
+    reasoning: str,
+    teacher_model: str = TEACHER_MODEL,
+    provenance: dict | None = None,
 ) -> dict:
     """A training sample. The assistant turn carries the teacher's reasoning as
     `reasoning_content` beside the critique; Emperor's trainer renders it as the thinking
@@ -139,12 +146,16 @@ def make_sample(
             "licence": TEACHER_LICENCE,
             "seed": task.seed,
             "host": "local llama.cpp",
+            **(provenance or {}),  # a hosted run's host and terms
             "clean": task.clean,
         },
     }
 
 
-GENERATE_ATTEMPTS = 3  # draws per task (new seed each) until one meets the ground truth
+# Draws per task (new seed each) until one meets the ground truth. Two: in hosted pilot 4 the
+# first draw passed for 6 tasks and the second for 1; the third rescued none, and every task
+# that failed all three paid for it.
+GENERATE_ATTEMPTS = 2
 ATTEMPT_SEED_STEP = 1_000_003
 
 
@@ -156,6 +167,7 @@ def teach_one(
     attempts: int = GENERATE_ATTEMPTS,
     notes: list | None = None,
     teacher_model: str = TEACHER_MODEL,
+    provenance: dict | None = None,
 ) -> tuple[dict | None, str | None]:
     """One critique from the teacher with its reasoning, or (None, reason).
 
@@ -177,10 +189,12 @@ def teach_one(
                 task.seed + attempt * ATTEMPT_SEED_STEP,
                 notes,
                 teacher_model,
+                provenance,
             )
         except TeacherOutputError:  # one unparsable output costs this draw, not the task's rest
             sample, reason = None, "teacher_output_unparsable"
         if sample is not None:
+            sample["meta"]["draws"] = attempt + 1  # which draw passed (what the extra draws buy)
             return sample, None
     return None, reason
 
@@ -192,6 +206,7 @@ def _draw(
     seed: int,
     notes: list | None = None,
     teacher_model: str = TEACHER_MODEL,
+    provenance: dict | None = None,
 ) -> tuple[dict | None, str]:
     reply = teacher.chat(
         [
@@ -229,7 +244,7 @@ def _draw(
         return None, "missed_defect"
     if score.false_rate is not None and score.false_rate > MAX_FALSE_RATE:
         return None, "false_finding"
-    return make_sample(task, critique, reasoning, teacher_model), ""
+    return make_sample(task, critique, reasoning, teacher_model, provenance), ""
 
 
 def run_generation(
@@ -240,38 +255,55 @@ def run_generation(
     should_stop: Callable[[], bool] = lambda: False,
     log: Callable[[str], None] = lambda _: None,
     teacher_model: str = TEACHER_MODEL,
+    workers: int = 1,
+    provenance: dict | None = None,
 ) -> dict:
+    """Critiques for every task not yet done; `workers` tasks at once (hosted teachers)."""
     traces = ShardWriter(data_dir / "traces", "traces")
     rejects = ShardWriter(data_dir / "rejects", "rejects")
-    finished = done_ids(data_dir / "traces") | done_ids(data_dir / "rejects")
+    # The latest record per id counts, and an excluded pilot's tasks are done again.
+    finished = set(current(data_dir / "traces")) | set(current(data_dir / "rejects"))
     todo = [t for t in load_tasks(data_dir / "prompts.jsonl") if t.id not in finished]
     if limit is not None:
         todo = todo[:limit]
     counts = {"todo": len(todo), "accepted": 0, "rejected": 0, "stopped": False}
-    for task in todo:
-        if should_stop():
-            counts["stopped"] = True
-            break
+
+    def work(task: CritiqueTask):
+        notes: list = []
         try:
-            notes: list = []
-            sample, reason = teach_one(task, teacher, notes=notes, teacher_model=teacher_model)
+            sample, reason = teach_one(
+                task, teacher, notes=notes, teacher_model=teacher_model, provenance=provenance
+            )
+        except TeacherError:
+            raise  # the server is gone or the budget is spent: stop, the id stays to do
         except TeacherOutputError:
             sample, reason = None, "teacher_output_unparsable"
-        except TeacherError as error:
-            counts.update(stopped=True, error=str(error))
-            break
         except Exception as error:  # one bad sample must not end an overnight run
             sample, reason = None, f"error:{type(error).__name__}"
+        return sample, reason, notes
+
+    def handle(task: CritiqueTask, result) -> None:
+        sample, reason, notes = result
         if sample:
             traces.write(sample)
             counts["accepted"] += 1
         else:
-            record = {"id": task.id, "task_class": task.task_class, "reason": reason}
+            record = {
+                "id": task.id,
+                "task_class": task.task_class,
+                "reason": reason,
+                **(provenance or {}),
+            }
             if notes:
                 record["draws"] = notes
             rejects.write(record)
             counts["rejected"] += 1
         log(f"{task.id} {'ok' if sample else reason}")
+
+    outcome = run_items(todo, work, handle, workers=workers, should_stop=should_stop)
+    counts["stopped"] = outcome["stopped"]
+    if "error" in outcome:
+        counts["error"] = outcome["error"]
     return counts
 
 
@@ -328,22 +360,29 @@ def run_judging(
     log: Callable[[str], None] = lambda _: None,
     model: str = JUDGE_MODEL,
     thinking: bool | None = None,
+    workers: int = 1,
+    settings: dict | None = None,
 ) -> dict:
-    """`thinking` defaults to the client's `enable_thinking` template option."""
+    """`thinking` defaults to the client's `enable_thinking` template option; `workers`
+    critiques are judged at once (hosted judges)."""
     if thinking is None:
         thinking = bool(getattr(client, "template_kwargs", {}).get("enable_thinking", True))
     writer = ShardWriter(data_dir / "judged", "judged")
-    finished = done_ids(data_dir / "judged")
+    # With `settings`, a critique judged under other settings is judged again (judge tokens
+    # only) and the latest verdict counts.
+    stamp = fingerprint(settings) if settings else None
+    finished = {
+        i
+        for i, r in current(data_dir / "judged").items()
+        if stamp is None or r.get("meta", {}).get("judge", {}).get("settings") == stamp
+    }
     tasks = {t.id: t for t in load_tasks(data_dir / "prompts.jsonl")}
     counts = {"judged": 0, "kept": 0, "stopped": False}
-    for sample in iter_records(data_dir / "traces"):
-        if sample["id"] in finished or sample["id"] not in tasks:
-            continue
-        if limit is not None and counts["judged"] >= limit:
-            break
-        if should_stop():
-            counts["stopped"] = True
-            break
+    todo = [s for i, s in current(data_dir / "traces").items() if i not in finished and i in tasks]
+    if limit is not None:
+        todo = todo[:limit]
+
+    def work(sample: dict) -> tuple[dict, dict]:
         task = tasks[sample["id"]]
         answer = sample["messages"][-1]["content"]
         score = score_critique(task, extract_json_object(answer))
@@ -366,17 +405,25 @@ def run_judging(
             judge = parse_judge(judge_answer(reply))
             keep, reasons = decide(truth, judge, threshold=threshold)
             verdict = {**judge, "model": model, "keep": keep, "rejection": reasons}
+            if stamp:
+                verdict["settings"] = stamp
         except (TeacherOutputError, CritiqueParseError) as error:
             verdict = {"keep": False, "rejection": ["judge_unparseable"], "reason": str(error)}
-        except TeacherError as error:
-            counts.update(stopped=True, error=str(error))
-            break
+        return truth, verdict  # a TeacherError stops the phase; the id stays to do
+
+    def handle(sample: dict, result: tuple[dict, dict]) -> None:
+        truth, verdict = result
         sample["meta"]["truth"] = truth
         sample["meta"]["judge"] = verdict
         writer.write(sample)
         counts["judged"] += 1
         counts["kept"] += bool(verdict["keep"])
-        log(f"{task.id} {'keep' if verdict['keep'] else verdict['rejection']}")
+        log(f"{sample['id']} {'keep' if verdict['keep'] else verdict['rejection']}")
+
+    outcome = run_items(todo, work, handle, workers=workers, should_stop=should_stop)
+    counts["stopped"] = outcome["stopped"]
+    if "error" in outcome:
+        counts["error"] = outcome["error"]
     return counts
 
 
@@ -391,7 +438,7 @@ def filter_kept(data_dir: Path) -> dict:
     kept = dropped = no_reasoning = 0
     temporary = target.with_suffix(".tmp")
     with temporary.open("w", encoding="utf-8", newline="\n") as handle:
-        for sample in iter_records(data_dir / "judged"):
+        for sample in current(data_dir / "judged").values():
             judge = sample.get("meta", {}).get("judge", {})
             try:
                 valid = not schema_errors(extract_json_object(sample["messages"][-1]["content"]))
@@ -412,9 +459,9 @@ def filter_kept(data_dir: Path) -> dict:
 
 
 def build_report(data_dir: Path) -> dict:
-    traces = list(iter_records(data_dir / "traces"))
-    rejects = list(iter_records(data_dir / "rejects"))
-    judged = list(iter_records(data_dir / "judged"))
+    traces = list(current(data_dir / "traces").values())
+    rejects = list(current(data_dir / "rejects").values())
+    judged = list(current(data_dir / "judged").values())
     kept_by_class: Counter = Counter()
     judged_by_class: Counter = Counter()
     rejection: Counter = Counter()
@@ -436,8 +483,9 @@ def build_report(data_dir: Path) -> dict:
         "kept_by_class": dict(sorted(kept_by_class.items())),
         "judged_by_class": dict(sorted(judged_by_class.items())),
         "judge_rejection_reasons": dict(rejection.most_common()),
-        "teacher": TEACHER_MODEL,
-        "licence": TEACHER_LICENCE,
+        # Read from the samples, so the card names the models that actually served.
+        **provenance([*traces, *judged]),
+        "excluded_pilots": exclusions(data_dir),
     }
 
 

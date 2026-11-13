@@ -153,8 +153,11 @@ PLAN_FAMILIES: dict[str, dict] = {
         "steps": {
             "prep": "Inventory the tables and consumers of the {system} and freeze schema changes.",
             "backup": "Take a full backup of {a} and test a restore into a scratch instance.",
-            "change1": "Create the {b} schema and backfill it from {a} in batches.",
-            "change2": "Dual-write new changes to both stores behind a feature flag.",
+            # Dual-write starts before the backfill: the other order loses writes made during
+            # the backfill, which every hosted-pilot-2 critic rightly flagged.
+            "change1": "Create the {b} schema and turn on dual-write of new changes to both "
+            "stores behind a feature flag.",
+            "change2": "Backfill the existing rows from {a} to {b} in batches.",
             "verify": "Compare row counts and checksums, then run the integration suite on {b}.",
             "release": "Cut reads over to {b} during the agreed window and watch error rates.",
             "rollback": "If error rate exceeds 1% for 5 minutes, flip the flag back to {a}.",
@@ -175,7 +178,9 @@ PLAN_FAMILIES: dict[str, dict] = {
             "backup": "Snapshot the current API responses as fixtures for regression tests.",
             "change1": "Add a streaming export endpoint to the {system} using {a} cursors.",
             "change2": "Add an Export button to the settings page that calls the endpoint.",
-            "verify": "Write tests for the columns, the encoding and cross-account access.",
+            # The timing acceptance is tested too (hosted pilot 2: "never measured").
+            "verify": "Write tests for the columns, the encoding and cross-account access, and "
+            "time an export of the largest account against the {n}-second limit.",
             "release": "Ship behind a flag to the {team} team, then to everyone.",
             "rollback": "If exports slow {a}, turn the flag off; no data changes are involved.",
             "cleanup": "Remove the flag and document the endpoint in the API reference.",
@@ -186,20 +191,24 @@ PLAN_FAMILIES: dict[str, dict] = {
         "goal": "Replace {system} v1 with v2 in production without dropping requests, within "
         "{n} hours.",
         "acceptance": [
-            "No increase in 5xx rate above 0.1% during the rollout",
+            "No dropped requests: 5xx responses and connection errors stay under 0.1%",
             "p95 latency of v2 is within 10% of v1 on the same traffic",
             "All {n} dependent clients keep working, verified by their smoke tests",
         ],
         "steps": {
             "prep": "List the clients of the {system} and tell their owners about the window.",
-            "backup": "Export the current {system} configuration and store it with the release.",
+            "backup": "Export the current {system} configuration (secrets excluded) and "
+            "store it with the release.",
             "change1": "Deploy v2 beside v1 and shadow a copy of 5% of read-only traffic to it "
             "(responses discarded).",
-            "change2": "Shift live traffic to v2 at 25%, then 50%, then 75%, with a pause after "
-            "each step.",
+            "change2": "Shift live traffic to v2 at 25%, then 50%, then 75%; after each step, "
+            "check the error rate, p95 latency and the clients' smoke tests before going on.",
             "verify": "Run each client's smoke test and compare latency and error dashboards.",
             "release": "Send 100% of traffic to v2 and keep v1 running idle.",
-            "rollback": "If a step breaches the error budget, send traffic back to v1 at once.",
+            # Hosted pilots 1-2: a rollback on the error budget alone left latency and smoke
+            # failures without one, a real gap the critics flagged.
+            "rollback": "If a step breaches the error budget, raises p95 latency more than 10% "
+            "or fails a smoke test, send traffic back to v1 at once.",
             "cleanup": "Retire v1 after the {team} team signs off.",
         },
     },
@@ -215,6 +224,9 @@ PLAN_FAMILIES: dict[str, dict] = {
             "Each candidate is benchmarked on the same {n}k writes/s workload",
             "The recommendation lists operating cost and failure behaviour per candidate",
             "A decision record names the choice and what would change it",
+            # Hosted pilot 1: without these the plan could meet its acceptance and miss its goal.
+            "The chosen store met the {n}k writes/s load test and the {team} team confirmed "
+            "they can run it",
         ],
         "steps": {
             "prep": "Write down the workload: record size, consistency needs and retention.",
@@ -223,7 +235,8 @@ PLAN_FAMILIES: dict[str, dict] = {
             "change2": "Run the same load test against each and record throughput, errors and "
             "the cluster's running cost.",
             "verify": "Kill a node during the test and note recovery time and data loss.",
-            "release": "Write the decision record and review it with the {team} team.",
+            "release": "Write the decision record and confirm with the {team} team that they "
+            "can operate the choice.",
             "rollback": "Keep the current store in place until the decision is approved.",
             "cleanup": "Archive the test cluster configuration.",
         },
@@ -654,6 +667,17 @@ def _diff(rng: random.Random, seed: int, clean: bool) -> CritiqueTask:
 
 # -- agent reports -------------------------------------------------------------------------
 
+# Evidence that the job itself is done, per report family (claim 1).
+JOB_EVIDENCE = {
+    "tests": "The previously flaky test passed 200 of 200 runs in a loop "
+    "(`pytest -q --count 200`); it failed 9 of 200 before the fix.",
+    "perf": "Start-up time is measured in claim 2.",
+    "upgrade": "requirements.lock now pins the newest {a} driver release, up from the previous "
+    "major version.",
+    "feature": "A client over 100 requests a minute now gets HTTP 429, covered by "
+    "`test_rate_limit`.",
+}
+
 REPORT_JOBS = [
     ("fix the flaky {system} test", "tests"),
     ("speed up the {system} start-up", "perf"),
@@ -680,9 +704,12 @@ def _report(rng: random.Random, seed: int, clean: bool) -> CritiqueTask:
     runs = rng.randrange(8, 60)
     before, after = rng.randrange(200, 900), rng.randrange(40, 190)
     claims = [
-        # Names the job: pilot 15's critics found no claim that the feature itself was built.
+        # Names the job and shows it done: pilot 15's critics found no claim that the feature
+        # was built, and hosted pilot 2's that one passing run proves neither a flaky test
+        # fixed, a driver upgraded nor a rate limit enforced.
         [f"Implemented the change ({job}) in src/core.py and added unit tests for it.",
-         f"Ran `pytest -q`: {runs} passed in {rng.randrange(2, 30)}.{rng.randrange(10)}s."],
+         f"Ran `pytest -q`: {runs} passed in {rng.randrange(2, 30)}.{rng.randrange(10)}s. "
+         + JOB_EVIDENCE[family].format(**fill)],
         [f"Measured the effect: {before} ms before, {after} ms after on the same input.",
          "Command: `python bench.py --repeat 20`, median of 20 runs, output attached."],
         # Concrete evidence: "followed the guidance" with only a link was a claim without
