@@ -37,6 +37,12 @@ def build_parser() -> argparse.ArgumentParser:
         )
         if name == "judge":
             p.add_argument("--threshold", type=float, default=data.JUDGE_MEAN)
+            p.add_argument(
+                "--judge-thinking",
+                action="store_true",
+                default=data.JUDGE_THINKING,
+                help="let the judge (Qwen3.8-27B) think before it answers (slower)",
+            )
     sub.add_parser("filter")
     sub.add_parser("report")
     return parser
@@ -50,15 +56,32 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "heldout":
         result = data.write_heldout(d, args.count, args.seed)
     elif args.command in ("generate", "judge"):
-        from emperor.data.teacher import ChatClient
+        from emperor.data.teacher import JUDGE_MODEL, TEACHER_MODEL, ChatClient
 
-        client = ChatClient(args.base_url, reasoning_effort=args.reasoning_effort)
+        if args.command == "generate":
+            client = ChatClient(args.base_url, reasoning_effort=args.reasoning_effort)
+        else:  # the judge's own server, a different model from the teacher
+            client = ChatClient(
+                args.base_url,
+                model=JUDGE_MODEL,
+                reasoning_effort=args.reasoning_effort,
+                template_kwargs={"enable_thinking": args.judge_thinking},
+            )
         try:
+            # Recorded as whatever the running server reports.
+            served = data.served_model(client)
             if args.command == "generate":
-                result = data.run_generation(d, client, limit=args.limit, log=print)
+                result = data.run_generation(
+                    d, client, limit=args.limit, log=print, teacher_model=served or TEACHER_MODEL
+                )
             else:
                 result = data.run_judging(
-                    d, client, threshold=args.threshold, limit=args.limit, log=print
+                    d,
+                    client,
+                    threshold=args.threshold,
+                    limit=args.limit,
+                    log=print,
+                    model=served or JUDGE_MODEL,
                 )
         finally:
             client.close()

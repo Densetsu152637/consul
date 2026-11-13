@@ -117,10 +117,17 @@ def _source(rng: random.Random, topic: str, body: str) -> Source:
 def _filler_sources(rng: random.Random, count: int) -> list[Source]:
     topics = [
         ("backups", "Backups run nightly and are kept for {n} days; restores are tested monthly."),
-        ("deploy windows", "Production deploys are allowed on weekdays before {n}:00 local time."),
-        ("code review", "Every change needs {n} approving review(s) before it can be merged."),
+        # Background facts, not obligations: as rules ("deploys only before 11:00", "N approving
+        # reviews", "tell on-call N hours ahead") no artefact mentioned them, and the critic
+        # flagged the gap as blocking in most plan and report tasks (pilots 6-12) while the ground
+        # truth counted it false. The sources still test evidence discipline as distractors.
+        (
+            "deploy pipeline",
+            "The deploy pipeline takes about {n} minutes from merge to production.",
+        ),
+        ("code review", "The team reviews about {n} pull requests a week."),
         ("secrets", "Secrets belong in the vault; the repository must never contain credentials."),
-        ("on-call", "The on-call engineer must be told {n} hours before a risky release."),
+        ("on-call", "The on-call rotation has {n} engineers and hands over every Monday."),
     ]
     chosen = rng.sample(topics, count)
     return [_source(rng, t, text.format(n=rng.randrange(2, 30))) for t, text in chosen]
@@ -186,8 +193,10 @@ PLAN_FAMILIES: dict[str, dict] = {
         "steps": {
             "prep": "List the clients of the {system} and tell their owners about the window.",
             "backup": "Export the current {system} configuration and store it with the release.",
-            "change1": "Deploy v2 beside v1 and mirror 5% of traffic to it.",
-            "change2": "Shift traffic to v2 in steps of 25% with a pause after each step.",
+            "change1": "Deploy v2 beside v1 and shadow a copy of 5% of read-only traffic to it "
+            "(responses discarded).",
+            "change2": "Shift live traffic to v2 at 25%, then 50%, then 75%, with a pause after "
+            "each step.",
             "verify": "Run each client's smoke test and compare latency and error dashboards.",
             "release": "Send 100% of traffic to v2 and keep v1 running idle.",
             "rollback": "If a step breaches the error budget, send traffic back to v1 at once.",
@@ -195,22 +204,27 @@ PLAN_FAMILIES: dict[str, dict] = {
         },
     },
     "research": {
-        "title": "Choose a queue for the {system}",
-        "goal": "Pick a message queue for the {system} that sustains {n}k messages a second "
+        # Candidates are data stores ({a}, {b}), so the task is about a store: as a queue choice
+        # the critic rightly objected that relational databases are not queues. Running cost is
+        # measured, as the acceptance requires; without it every task carried an unrecorded
+        # acceptance-changing gap.
+        "title": "Choose a data store for the {system}",
+        "goal": "Pick a data store for the {system} that sustains {n}k writes a second "
         "and can be run by the {team} team.",
         "acceptance": [
-            "Each candidate is benchmarked on the same {n}k msg/s workload",
+            "Each candidate is benchmarked on the same {n}k writes/s workload",
             "The recommendation lists operating cost and failure behaviour per candidate",
             "A decision record names the choice and what would change it",
         ],
         "steps": {
-            "prep": "Write down the workload: message size, ordering needs and retention.",
-            "backup": "Record the current queue's metrics for a baseline.",
+            "prep": "Write down the workload: record size, consistency needs and retention.",
+            "backup": "Record the current store's metrics for a baseline.",
             "change1": "Stand up three candidates ({a}, {b} and one more) in a test cluster.",
-            "change2": "Run the same load test against each and record throughput and loss.",
-            "verify": "Kill a node during the test and note recovery time and message loss.",
+            "change2": "Run the same load test against each and record throughput, errors and "
+            "the cluster's running cost.",
+            "verify": "Kill a node during the test and note recovery time and data loss.",
             "release": "Write the decision record and review it with the {team} team.",
-            "rollback": "Keep the current queue in place until the decision is approved.",
+            "rollback": "Keep the current store in place until the decision is approved.",
             "cleanup": "Archive the test cluster configuration.",
         },
     },
@@ -225,13 +239,16 @@ IMPROVEMENT_PLAN = {
 def _plan(rng: random.Random, seed: int, clean: bool) -> CritiqueTask:
     name = _pick(rng, sorted(PLAN_FAMILIES))
     family = PLAN_FAMILIES[name]
+    # An embedded store is no candidate for thousands of writes a second across nodes: in pilot 14
+    # critics rightly objected to SQLite in every research plan that listed it.
+    stores = [s for s in _part(rng, STORES) if not (name == "research" and s == "SQLite")]
     fill = {
         "system": _pick(rng, _part(rng, SYSTEMS)),
-        "a": _pick(rng, _part(rng, STORES)),
+        "a": _pick(rng, stores),
         "n": rng.randrange(3, 60),
         "team": _pick(rng, _part(rng, TEAMS)),
     }
-    fill["b"] = _pick(rng, [s for s in _part(rng, STORES) if s != fill["a"]])
+    fill["b"] = _pick(rng, [s for s in stores if s != fill["a"]])
     steps = [[role, text.format(**fill)] for role, text in family["steps"].items()]
     acceptance = [line.format(**fill) for line in family["acceptance"]]
     sources = _filler_sources(rng, 2)
@@ -361,7 +378,23 @@ def _d_scope(rng, steps, acceptance, sources, fill):
     )
     return {
         "where": "@extra",
-        "keywords": ["scope", "unrelated", "separate", "creep", "beyond", "out of"],
+        # Pilot 14: a critic called this step "unnecessary complexity" at the right location and
+        # was scored as missing it; the words a critic uses for scope creep are now accepted.
+        "keywords": [
+            "scope",
+            "unrelated",
+            "separate",
+            "creep",
+            "beyond",
+            "out of",
+            "unnecessary",
+            "not needed",
+            "not required",
+            "outside",
+            "not part of",
+            "irrelevant",
+            "distract",
+        ],
         "description": "A step unrelated to the goal.",
     }
 
@@ -421,7 +454,7 @@ def _t_average(rng, bug):
             *guard,
             "    return sum(values) / len(values)",
         ],
-        "bug": 3,
+        "bug": 2,  # the return line once the guard is gone (3 pointed past the end: L<None>)
         "keywords": ["empty", "zerodivision", "division by zero", "divide", "no values", "guard"],
         "description": "An empty list raises ZeroDivisionError instead of returning 0.0.",
     }
@@ -508,7 +541,9 @@ def _t_default(rng, bug):
     guard = [] if bug else ["    tags = [] if tags is None else tags"]
     return {
         "file": "tags.py",
-        "intent": "Attach a tag to an item, creating the list when none is given",
+        # Says what the code does (adds the item to the list): "attach a tag to an item" read
+        # as reversed parameters, a real defect in every task built from this template.
+        "intent": "Add an item to a tag list, creating the list when none is given",
         "lines": [sig, *guard, "    tags.append(item)", "    return tags"],
         "bug": 0,
         "keywords": ["mutable", "default", "shared", "state", "none"],
@@ -631,16 +666,31 @@ def _report(rng: random.Random, seed: int, clean: bool) -> CritiqueTask:
     template, family = _pick(rng, REPORT_JOBS)
     fill = {"system": _pick(rng, _part(rng, SYSTEMS)), "a": _pick(rng, _part(rng, STORES))}
     job = template.format(**fill)
-    sources = _filler_sources(rng, 2)
+    # Claim 3 cites the vendor's guidance, so the task provides it: citing an unrelated
+    # policy page there was a real defect that the ground truth did not record.
+    guidance = _source(
+        rng,
+        f"{fill['a']} guidance",
+        # The values let claim 3 be checked: pilot 15's critics flagged its concrete settings
+        # as unsupported when the guidance gave none.
+        f"Vendor guidance for {fill['a']}: use connection pooling (pool size 10 to 50) and set "
+        "a request timeout of 10 s or less on every client.",
+    )
+    sources = [guidance, *_filler_sources(rng, 2)]
     runs = rng.randrange(8, 60)
     before, after = rng.randrange(200, 900), rng.randrange(40, 190)
     claims = [
-        ["Implemented the change in src/core.py and added unit tests.",
+        # Names the job: pilot 15's critics found no claim that the feature itself was built.
+        [f"Implemented the change ({job}) in src/core.py and added unit tests for it.",
          f"Ran `pytest -q`: {runs} passed in {rng.randrange(2, 30)}.{rng.randrange(10)}s."],
         [f"Measured the effect: {before} ms before, {after} ms after on the same input.",
          "Command: `python bench.py --repeat 20`, median of 20 runs, output attached."],
-        [f"Followed the vendor guidance for {fill['a']}.", f"Source: {sources[0].url}"],
-        ["Verified the change locally against the staging data set.",
+        # Concrete evidence: "followed the guidance" with only a link was a claim without
+        # evidence, which critics rightly flagged in clean reports (pilots 10, 11 and 14).
+        [f"Followed the vendor guidance for {fill['a']}: pool size 20, 5 s request timeout.",
+         f"Source: {sources[0].url}; config diff attached."],
+        # Consistent with its evidence; the untested_claim defect overwrites it.
+        ["Verified the change locally with the test fixtures.",
          "local run with fixtures only; no shared environment used."],
     ]  # fmt: skip
     summary = f"Summary: the job is done; latency fell from {before} ms to {after} ms."

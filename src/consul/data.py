@@ -10,8 +10,15 @@ from collections.abc import Callable
 from pathlib import Path
 
 from emperor.data.generate import Chat
+from emperor.data.judge import judge_answer
 from emperor.data.shards import ShardWriter, done_ids, iter_records, read_jsonl
-from emperor.data.teacher import TEACHER_LICENCE, TEACHER_MODEL, TeacherError, TeacherOutputError
+from emperor.data.teacher import (
+    JUDGE_MODEL,
+    TEACHER_LICENCE,
+    TEACHER_MODEL,
+    TeacherError,
+    TeacherOutputError,
+)
 
 from consul import prompts
 from consul.overlap import DEFAULT_THRESHOLD, OverlapIndex, overlap_report
@@ -24,8 +31,33 @@ MIN_RECALL = 1.0
 MAX_FALSE_RATE = 0.0
 JUDGE_MEAN = 4.0
 JUDGE_MIN = 3
-# The teacher's reasoning is stored and becomes the student's thinking: low effort keeps it short.
-GENERATE_EFFORT = "low"
+# The teacher's reasoning is stored and becomes the student's thinking. Low effort gave about 65
+# tokens of it in the pilot; medium about 330, and critiques stayed under 2.4k tokens.
+GENERATE_EFFORT = "medium"
+# The judge answers without thinking first: on the pilot's ten critiques it kept and rejected
+# exactly the same ones as with thinking (scores within 0.6 a criterion) in 10 s instead
+# of 135 s a critique. The ground-truth check carries most of the decision.
+JUDGE_THINKING = False
+# Judge sampling: Qwen's recommended 0.6 while it thinks (greedy decoding can loop inside a long
+# think block); near-greedy when the verdict is the whole answer, for repeatable scores.
+JUDGE_TEMPERATURE = {True: 0.6, False: 0.2}
+
+
+def model_name(gguf: str | Path) -> str:
+    """The name recorded for a served GGUF: its file name without `.gguf`, so a sample names the
+    exact weights and quantisation that produced or judged it."""
+    name = str(gguf).replace("\\", "/").rsplit("/", 1)[-1]
+    return name[: -len(".gguf")] if name.lower().endswith(".gguf") else name
+
+
+def served_model(client) -> str | None:
+    """The model a running llama-server reports at /v1/models, as `model_name` records it."""
+    try:
+        response = client._http.get(f"{client.base_url}/models")
+        response.raise_for_status()
+        return model_name(response.json()["data"][0]["id"])
+    except Exception:
+        return None
 
 
 # -- tasks ---------------------------------------------------------------------------------
@@ -83,7 +115,9 @@ def critique_text(critique: dict) -> str:
     return json.dumps(critique, indent=1, ensure_ascii=False)
 
 
-def make_sample(task: CritiqueTask, critique: dict, reasoning: str) -> dict:
+def make_sample(
+    task: CritiqueTask, critique: dict, reasoning: str, teacher_model: str = TEACHER_MODEL
+) -> dict:
     """A training sample. The assistant turn carries the teacher's reasoning as
     `reasoning_content` beside the critique; Emperor's trainer renders it as the thinking
     model's `<think>` block, so the student learns to reason before it critiques."""
@@ -101,7 +135,7 @@ def make_sample(task: CritiqueTask, critique: dict, reasoning: str) -> dict:
             },
         ],
         "meta": {
-            "teacher": TEACHER_MODEL,
+            "teacher": teacher_model,
             "licence": TEACHER_LICENCE,
             "seed": task.seed,
             "host": "local llama.cpp",
@@ -110,19 +144,62 @@ def make_sample(task: CritiqueTask, critique: dict, reasoning: str) -> dict:
     }
 
 
+GENERATE_ATTEMPTS = 3  # draws per task (new seed each) until one meets the ground truth
+ATTEMPT_SEED_STEP = 1_000_003
+
+
 def teach_one(
-    task: CritiqueTask, teacher: Chat, *, temperature: float = 0.4
+    task: CritiqueTask,
+    teacher: Chat,
+    *,
+    temperature: float = 0.4,
+    attempts: int = GENERATE_ATTEMPTS,
+    notes: list | None = None,
+    teacher_model: str = TEACHER_MODEL,
 ) -> tuple[dict | None, str | None]:
-    """One critique from the teacher with its reasoning, or (None, reason). Checks format,
-    citations and that there is reasoning to learn from; the ground truth is applied at the
-    judge step."""
+    """One critique from the teacher with its reasoning, or (None, reason).
+
+    A draw must parse, validate, cite only provided sources, carry reasoning and meet the
+    task's ground truth (every seeded acceptance-changing defect found, no false blocking
+    finding). Otherwise the teacher is asked again with another seed, up to `attempts` draws,
+    and the last reason is returned. Consul has no retry rounds, and in the pilots about half
+    of the critiques failed the ground truth only at the judge step, after the teacher time
+    was spent; the judge still decides on the rest. `notes`, when given, collects what each
+    failed draw got wrong (finding locations and impacts), for the reject record.
+    """
+    reason = "no_attempt"
+    for attempt in range(attempts):
+        try:
+            sample, reason = _draw(
+                task,
+                teacher,
+                temperature,
+                task.seed + attempt * ATTEMPT_SEED_STEP,
+                notes,
+                teacher_model,
+            )
+        except TeacherOutputError:  # one unparsable output costs this draw, not the task's rest
+            sample, reason = None, "teacher_output_unparsable"
+        if sample is not None:
+            return sample, None
+    return None, reason
+
+
+def _draw(
+    task: CritiqueTask,
+    teacher: Chat,
+    temperature: float,
+    seed: int,
+    notes: list | None = None,
+    teacher_model: str = TEACHER_MODEL,
+) -> tuple[dict | None, str]:
     reply = teacher.chat(
         [
             {"role": "system", "content": prompts.teacher_system()},
             {"role": "user", "content": prompts.user_message(task)},
         ],
         temperature=temperature,
-        seed=task.seed,
+        seed=seed,
         max_tokens=8192,  # gpt-oss reasons first; 3000 often left no room for the answer
     )
     try:
@@ -131,12 +208,28 @@ def teach_one(
         return None, "unparsable"
     if schema_errors(critique):
         return None, "schema_invalid"
-    if score_critique(task, critique).bad_citations:
+    score = score_critique(task, critique)
+    if score.bad_citations:
         return None, "invented_citation"
     reasoning = (reply.get("reasoning_content") or "").strip()
     if not reasoning:
         return None, "empty_reasoning"
-    return make_sample(task, critique, reasoning), None
+    if notes is not None and (score.missed or score.false_findings):
+        notes.append(
+            {
+                "missed": score.missed,
+                "false": [
+                    f"{f['location']}: {f['impact'][:160]}"
+                    for f in critique["findings"]
+                    if f["id"] in score.false_findings
+                ],
+            }
+        )
+    if score.recall is not None and score.recall < MIN_RECALL:
+        return None, "missed_defect"
+    if score.false_rate is not None and score.false_rate > MAX_FALSE_RATE:
+        return None, "false_finding"
+    return make_sample(task, critique, reasoning, teacher_model), ""
 
 
 def run_generation(
@@ -146,6 +239,7 @@ def run_generation(
     limit: int | None = None,
     should_stop: Callable[[], bool] = lambda: False,
     log: Callable[[str], None] = lambda _: None,
+    teacher_model: str = TEACHER_MODEL,
 ) -> dict:
     traces = ShardWriter(data_dir / "traces", "traces")
     rejects = ShardWriter(data_dir / "rejects", "rejects")
@@ -159,7 +253,8 @@ def run_generation(
             counts["stopped"] = True
             break
         try:
-            sample, reason = teach_one(task, teacher)
+            notes: list = []
+            sample, reason = teach_one(task, teacher, notes=notes, teacher_model=teacher_model)
         except TeacherOutputError:
             sample, reason = None, "teacher_output_unparsable"
         except TeacherError as error:
@@ -171,7 +266,10 @@ def run_generation(
             traces.write(sample)
             counts["accepted"] += 1
         else:
-            rejects.write({"id": task.id, "task_class": task.task_class, "reason": reason})
+            record = {"id": task.id, "task_class": task.task_class, "reason": reason}
+            if notes:
+                record["draws"] = notes
+            rejects.write(record)
             counts["rejected"] += 1
         log(f"{task.id} {'ok' if sample else reason}")
     return counts
@@ -228,7 +326,12 @@ def run_judging(
     limit: int | None = None,
     should_stop: Callable[[], bool] = lambda: False,
     log: Callable[[str], None] = lambda _: None,
+    model: str = JUDGE_MODEL,
+    thinking: bool | None = None,
 ) -> dict:
+    """`thinking` defaults to the client's `enable_thinking` template option."""
+    if thinking is None:
+        thinking = bool(getattr(client, "template_kwargs", {}).get("enable_thinking", True))
     writer = ShardWriter(data_dir / "judged", "judged")
     finished = done_ids(data_dir / "judged")
     tasks = {t.id: t for t in load_tasks(data_dir / "prompts.jsonl")}
@@ -256,13 +359,13 @@ def run_judging(
                     {"role": "system", "content": prompts.JUDGE_SYSTEM},
                     {"role": "user", "content": prompts.judge_user(task, answer)},
                 ],
-                temperature=0.0,
+                temperature=JUDGE_TEMPERATURE[thinking],
                 seed=task.seed,
-                max_tokens=4096,  # room for gpt-oss reasoning; 1024 often cut the verdict off
+                max_tokens=12288,  # room for any thinking before the verdict
             )
-            judge = parse_judge(reply.get("content") or "")
+            judge = parse_judge(judge_answer(reply))
             keep, reasons = decide(truth, judge, threshold=threshold)
-            verdict = {**judge, "model": TEACHER_MODEL, "keep": keep, "rejection": reasons}
+            verdict = {**judge, "model": model, "keep": keep, "rejection": reasons}
         except (TeacherOutputError, CritiqueParseError) as error:
             verdict = {"keep": False, "rejection": ["judge_unparseable"], "reason": str(error)}
         except TeacherError as error:

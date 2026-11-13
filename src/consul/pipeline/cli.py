@@ -17,7 +17,7 @@ from pathlib import Path
 from emperor.data.shards import done_ids, iter_records
 from emperor.data.teacher import ChatClient
 from emperor.pipeline import cli as base
-from emperor.pipeline.run import Pipeline
+from emperor.pipeline.run import TEACHER_SLOT, Pipeline
 
 from consul import data
 
@@ -34,11 +34,16 @@ class ConsulPipeline(Pipeline):
         eval_tasks: int = 60,
         eval_seed: int = data.HELDOUT_SEED_OFFSET,
         generate_effort: str = data.GENERATE_EFFORT,
+        judge_thinking: bool = data.JUDGE_THINKING,
     ):
         super().__init__(settings, gate, own)
         self.eval_tasks = eval_tasks
         self.eval_seed = eval_seed
         self.generate_effort = generate_effort
+        self.judge_thinking = judge_thinking
+
+    def thinks(self) -> bool:
+        return self.judge_thinking and self.s.judge_thinking
 
     def phase_prompts(self) -> dict:
         """Training tasks, then the held-out set checked against them."""
@@ -47,40 +52,69 @@ class ConsulPipeline(Pipeline):
         status = "done" if overlap["ok"] else "failed"
         return {"status": status, **result, "heldout": overlap}
 
-    def _teacher_work(self, kind: str):
+    def _generate_work(self, directory: Path, attempt: int = 0):
+        """Critiques on the teacher's server (gpt-oss-120b). Generation's reasoning becomes the
+        student's thinking, so it runs at `--generate-reasoning-effort`."""
+
         def work(server, should_stop):
-            # Generation's reasoning becomes the student's thinking, so it is kept short;
-            # the judge keeps the pipeline's `--reasoning-effort`.
-            effort = self.generate_effort if kind == "generate" else self.s.reasoning_effort
             client = ChatClient(
-                f"http://127.0.0.1:{self.s.teacher_port}/v1", reasoning_effort=effort
+                f"http://127.0.0.1:{self.s.teacher_port}/v1",
+                reasoning_effort=self.generate_effort,
+                slot=TEACHER_SLOT,
             )
             try:
-                if kind == "generate":
-                    counts = data.run_generation(
-                        self.s.data_dir, client, should_stop=should_stop, log=log.debug
-                    )
-                else:
-                    counts = data.run_judging(
-                        self.s.data_dir,
-                        client,
-                        threshold=self.s.threshold,
-                        should_stop=should_stop,
-                        log=log.debug,
-                    )
+                counts = data.run_generation(
+                    directory,
+                    client,
+                    should_stop=should_stop,
+                    log=log.debug,
+                    teacher_model=data.model_name(self.s.teacher_gguf),
+                )
             finally:
                 client.close()
             return {**counts, "stopped": counts.get("stopped", False)}
 
         return work
 
-    def _pending(self, source: str, done: str) -> int:
-        finished = done_ids(self.s.data_dir / done)
+    def _judge_work(self, directory: Path):
+        """Ground-truth and judge checks on the judge's own server (Qwen3.8-27B). It thinks only
+        with `--judge-thinking`, and never with Emperor's `--no-judge-thinking`."""
+
+        def work(server, should_stop):
+            judge = data.model_name(self.s.judge_gguf)  # the weights this phase serves
+            client = ChatClient(
+                f"http://127.0.0.1:{self.s.teacher_port}/v1",
+                model=judge,
+                reasoning_effort=self.s.judge_reasoning_effort,
+                template_kwargs={"enable_thinking": self.thinks()},
+            )
+            try:
+                counts = data.run_judging(
+                    directory,
+                    client,
+                    threshold=self.s.threshold,
+                    should_stop=should_stop,
+                    log=log.debug,
+                    model=judge,
+                )
+            finally:
+                client.close()
+            return {**counts, "stopped": counts.get("stopped", False)}
+
+        return work
+
+    def phase_retry(self) -> dict:
+        """Emperor's retry rounds replay agent traces; Consul's critiques are not retried."""
+        return {"status": "skipped", "reason": "Consul has no retry rounds"}
+
+    def _pending(self, source: str, done: str, directory: Path | None = None) -> int:
+        directory = directory or self.s.data_dir
+        finished = done_ids(directory / done)
         if source == "prompts.jsonl":
-            finished |= done_ids(self.s.data_dir / "rejects")
-            tasks = data.load_tasks(self.s.data_dir / source)
+            finished |= done_ids(directory / "rejects")
+            tasks = data.load_tasks(directory / source)
             return sum(1 for t in tasks if t.id not in finished)
-        return sum(1 for r in iter_records(self.s.data_dir / source) if r["id"] not in finished)
+        return sum(1 for r in iter_records(directory / source) if r["id"] not in finished)
 
     def phase_filter(self) -> dict:
         result = data.filter_kept(self.s.data_dir)
@@ -111,6 +145,12 @@ def split_extra(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         choices=["low", "medium", "high"],
         help="teacher reasoning effort for critiques (its reasoning is what the student learns)",
     )
+    extra.add_argument(
+        "--judge-thinking",
+        action="store_true",
+        default=data.JUDGE_THINKING,
+        help="let the judge think before it answers (off: same verdicts, 13x faster)",
+    )
     known, rest = extra.parse_known_args(argv)
     return known, rest
 
@@ -137,6 +177,7 @@ def main(argv: list[str] | None = None) -> int:
             known.eval_tasks,
             known.eval_seed,
             known.generate_reasoning_effort,
+            known.judge_thinking,
         )
 
     return base.main(

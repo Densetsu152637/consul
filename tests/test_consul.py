@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import pytest
+from emperor.data.shards import ShardWriter, iter_records
 from emperor.pipeline.idle import IdleGate
 from emperor.pipeline.processes import OwnProcesses
 from emperor.pipeline.run import Settings
@@ -25,7 +26,7 @@ from consul.schema import (
     strip_thinking,
 )
 from consul.score import anchor_hit, reference_critique, score_critique
-from consul.tasks import CritiqueTask, generate_tasks, make_task
+from consul.tasks import CritiqueTask, dumps, generate_tasks, make_task
 
 ROOT = Path(__file__).parent.parent
 
@@ -194,7 +195,7 @@ def test_generate_judge_filter_end_to_end(tmp_path):
     assert "keywords" not in json.dumps(sample["messages"])  # ground truth stays out
 
 
-def test_judging_drops_critiques_that_miss_a_defect(tmp_path):
+def test_critiques_that_miss_a_defect_are_dropped_before_judging(tmp_path):
     data.write_train_tasks(tmp_path, 40, 1)
     tasks = data.load_tasks(tmp_path / "prompts.jsonl")
     target = next(t for t in tasks if not t.clean)
@@ -211,12 +212,14 @@ def test_judging_drops_critiques_that_miss_a_defect(tmp_path):
             return super().chat(messages, **kwargs)
 
     teacher = Lazy(tasks)
-    data.run_generation(tmp_path, teacher)
+    counts = data.run_generation(tmp_path, teacher)
+    assert counts["rejected"] == 1
+    (reject,) = data.iter_records(tmp_path / "rejects")
+    assert (reject["id"], reject["reason"]) == (target.id, "missed_defect")
     data.run_judging(tmp_path, teacher)
     kept = {s["id"] for s in data.iter_records(tmp_path / "judged") if s["meta"]["judge"]["keep"]}
     assert target.id not in kept and len(kept) == 39
-    reasons = data.build_report(tmp_path)["judge_rejection_reasons"]
-    assert reasons == {"missed_defect": 1}
+    assert data.build_report(tmp_path)["judge_rejection_reasons"] == {}
 
 
 def test_eval_dry_run_scores_perfectly_and_refuses_overlap(tmp_path, capsys):
@@ -244,7 +247,9 @@ def test_consul_config_is_emperors_recipe_with_consul_names():
     config = load_config(ROOT / "configs" / "sft.toml")
     assert config.merge.output_dir == "weights/consul-4b-bf16"
     assert config.release.name == "consul-4b" and config.release.eval_alias == "consul"
-    assert config.model.base.endswith("Qwen3-4B-Thinking-2507")
+    assert config.model.base.endswith("Qwen3.5-4B")
+    assert config.data.max_length == 8192
+    assert {"in_proj_qkv", "in_proj_z", "out_proj"} <= set(config.lora.target_modules)
 
 
 def make_pipeline(root: Path, **kwargs) -> ConsulPipeline:
@@ -274,7 +279,8 @@ def test_pipeline_runs_without_gpu_phases(tmp_path):
     )
     summary = pipeline.run()
     assert summary["status"] == "done" and summary["phases"]["prompts"]["status"] == "done"
-    assert summary["teacher"] == {"model": "gpt-oss-20b", "licence": "Apache-2.0"}
+    assert summary["teacher"] == {"model": "gpt-oss-120b", "licence": "Apache-2.0"}
+    assert summary["phases"]["retry"]["status"] == "skipped"
 
 
 def test_pipeline_cli_dispatch_and_extra_options():
@@ -282,7 +288,7 @@ def test_pipeline_cli_dispatch_and_extra_options():
 
     known, rest = split_extra(["--detach", "--eval-tasks", "9", "--asleep", "--eval-seed=5"])
     assert (known.eval_tasks, known.eval_seed, rest) == (9, 5, ["--detach", "--asleep"])
-    assert known.generate_reasoning_effort == "low"
+    assert known.generate_reasoning_effort == "medium"
     known, rest = split_extra(["--generate-reasoning-effort", "high", "--reasoning-effort", "low"])
     assert known.generate_reasoning_effort == "high" and rest == ["--reasoning-effort", "low"]
 
@@ -294,27 +300,93 @@ def test_prompt_example_is_a_valid_critique():
     assert '"verdict": "revise"' in prompts.CONSUL_SYSTEM
 
 
-class EffortRecorder:
-    """Records each client's reasoning effort, and answers nothing (no tasks are pending)."""
+class ClientRecorder:
+    """Records how each client was made, and answers nothing (no tasks are pending)."""
 
-    efforts: list = []
+    made: list = []
 
     def __init__(self, base_url, reasoning_effort=None, **kwargs):
-        EffortRecorder.efforts.append(reasoning_effort)
+        ClientRecorder.made.append({"reasoning_effort": reasoning_effort, **kwargs})
 
     def close(self):
         pass
 
 
-def test_generation_uses_its_own_reasoning_effort_and_judging_the_pipelines(tmp_path, monkeypatch):
+def test_generation_runs_on_the_teacher_and_judging_on_the_thinking_judge(tmp_path, monkeypatch):
     import consul.pipeline.cli as cli
 
-    monkeypatch.setattr(cli, "ChatClient", EffortRecorder)
-    EffortRecorder.efforts = []
-    pipeline = make_pipeline(tmp_path, reasoning_effort="high")
-    pipeline._teacher_work("generate")(None, lambda: False)
-    pipeline._teacher_work("judge")(None, lambda: False)
-    assert EffortRecorder.efforts == ["low", "high"]
+    monkeypatch.setattr(cli, "ChatClient", ClientRecorder)
+    ClientRecorder.made = []
+    pipeline = make_pipeline(tmp_path, judge_reasoning_effort="high")
+    pipeline._generate_work(pipeline.s.data_dir)(None, lambda: False)
+    pipeline._judge_work(pipeline.s.data_dir)(None, lambda: False)
+    generate, judge = ClientRecorder.made
+    assert generate == {"reasoning_effort": "medium", "slot": 0}
+    assert judge["model"] == "Qwen3.8-27B-UD-Q4_K_XL"  # named from the GGUF it serves
+    assert judge["reasoning_effort"] == "high"
+    assert judge["template_kwargs"] == {"enable_thinking": False}
+
+
+def test_judge_thinking_needs_the_flag_and_obeys_no_judge_thinking(tmp_path):
+    for name in "abc":
+        (tmp_path / name).mkdir()
+    on = make_pipeline(tmp_path / "a")
+    on.judge_thinking = True  # --judge-thinking
+    assert on.thinks()
+    off = make_pipeline(tmp_path / "b", judge_thinking=False)  # Emperor's --no-judge-thinking
+    off.judge_thinking = True
+    assert not off.thinks()
+    assert not make_pipeline(tmp_path / "c").thinks()  # Consul's default: no thinking
+
+
+def test_the_judges_thinking_is_cut_before_its_verdict_is_parsed(tmp_path):
+    task = generate_tasks(1, 7)[0]
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "prompts.jsonl").write_text(dumps(task) + "\n", encoding="utf-8")
+    critique = reference_critique(task)
+    sample = data.make_sample(task, critique, "Weigh step 3.")
+    ShardWriter(data_dir / "traces", "traces").write(sample)
+    verdict = {"scores": dict.fromkeys(prompts.JUDGE_CRITERIA, 5), "pass": True, "reason": "ok"}
+
+    class Judge:
+        def chat(self, messages, **kwargs):
+            return {"content": '<think>{"scores": 1} is not it.</think>' + json.dumps(verdict)}
+
+    counts = data.run_judging(data_dir, Judge())
+    (judged,) = iter_records(data_dir / "judged")
+    assert counts["judged"] == 1 and judged["meta"]["judge"]["model"] == "Qwen3.8-27B"
+    assert judged["meta"]["judge"]["pass"] is True
+
+
+def test_judge_temperature_follows_thinking(tmp_path):
+    task = generate_tasks(1, 7)[0]
+    verdict = {"scores": dict.fromkeys(prompts.JUDGE_CRITERIA, 5), "pass": True, "reason": "ok"}
+
+    class Judge:
+        def __init__(self, thinking):
+            self.template_kwargs = {"enable_thinking": thinking}
+            self.seen = []
+
+        def chat(self, messages, **kwargs):
+            self.seen.append(kwargs["temperature"])
+            return {"content": json.dumps(verdict)}
+
+    for thinking, temperature in ((False, 0.2), (True, 0.6)):
+        data_dir = tmp_path / str(thinking)
+        data_dir.mkdir()
+        (data_dir / "prompts.jsonl").write_text(dumps(task) + "\n", encoding="utf-8")
+        sample = data.make_sample(task, reference_critique(task), "Weigh step 3.")
+        ShardWriter(data_dir / "traces", "traces").write(sample)
+        judge = Judge(thinking)
+        data.run_judging(data_dir, judge)
+        assert judge.seen == [temperature]
+
+
+def test_model_names_come_from_the_served_gguf():
+    assert data.model_name("D:/m/Qwen3.8-27B-UD-Q4_K_XL.gguf") == "Qwen3.8-27B-UD-Q4_K_XL"
+    assert data.model_name(r"F:\m\gpt-oss-120b-F16.gguf") == "gpt-oss-120b-F16"
+    assert data.model_name("Qwen3.8-27B") == "Qwen3.8-27B"
 
 
 def test_teacher_reply_without_reasoning_is_rejected():
@@ -358,3 +430,69 @@ def test_eval_scores_a_thinking_models_answer(tmp_path):
     reply = "<think>{not json} weigh it</think>" + json.dumps(reference_critique(task))
     score, error = run_task(task, lambda _: reply)
     assert error is None and score.format_ok and not score.missed
+
+
+def test_a_clean_report_cites_a_provided_source_that_supports_its_claim():
+    for seed in range(40):
+        task = make_task(seed, kind="report", clean=True)
+        claim3 = next(line for line in task.artifact.splitlines() if "vendor guidance" in line)
+        evidence = task.artifact.splitlines()[task.artifact.splitlines().index(claim3) + 1]
+        cited = evidence.split("Source: ")[1].split(";")[0].strip()
+        source = next(s for s in task.sources if s.url == cited)
+        assert "guidance" in source.title.lower() and source.text.startswith("Vendor guidance")
+        assert "staging data set" not in task.artifact
+
+
+def test_every_seeded_diff_defect_has_a_line():
+    for seed in range(300):
+        task = make_task(seed, kind="diff", clean=False)
+        for defect in task.defects:
+            assert "LNone" not in defect.where, (seed, task.family)
+
+
+def test_a_critique_that_misses_the_ground_truth_is_drawn_again():
+    task = generate_tasks(40, 1)
+    task = next(t for t in task if not t.clean)
+
+    class LazyOnce(StubTeacher):
+        def chat(self, messages, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                empty = {"verdict": "accept", "summary": "ok", "findings": []}
+                return {"content": json.dumps(empty), "reasoning_content": "Looks fine."}
+            self.calls -= 1
+            return super().chat(messages, **kwargs)
+
+    teacher = LazyOnce([task])
+    sample, reason = data.teach_one(task, teacher)
+    assert reason is None and sample["messages"][-1]["content"]
+    always_lazy = LazyOnce([task])
+    always_lazy.calls = -10  # every draw is the lazy one
+    always_lazy.chat = lambda messages, **kw: {
+        "content": json.dumps({"verdict": "accept", "summary": "ok", "findings": []}),
+        "reasoning_content": "Looks fine.",
+    }
+    assert data.teach_one(task, always_lazy) == (None, "missed_defect")
+
+
+def test_an_unparsable_output_costs_one_draw_not_the_task():
+    from emperor.data.teacher import TeacherOutputError
+
+    task = next(t for t in generate_tasks(40, 1) if not t.clean)
+
+    class BadOnce(StubTeacher):
+        def chat(self, messages, **kwargs):
+            if not getattr(self, "failed", False):
+                self.failed = True
+                raise TeacherOutputError("server rejected the output 3 times")
+            return super().chat(messages, **kwargs)
+
+    sample, reason = data.teach_one(task, BadOnce([task]))
+    assert reason is None and sample is not None
+
+
+def test_research_plans_do_not_offer_an_embedded_store():
+    for seed in range(200):
+        task = make_task(seed, kind="plan")
+        if task.family == "research":
+            assert "SQLite" not in task.artifact

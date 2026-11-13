@@ -2,12 +2,13 @@
 # Paths are relative to the repository root unless absolute. The base is read-only.
 
 [model]
-base = "D:/AI-Models/unsloth/Qwen3-4B-Thinking-2507"
+base = "F:/AI-Models/Qwen/Qwen3.5-4B"
 attn_implementation = "sdpa"  # flash-attn has no Windows wheel
 
 [data]
 path = "data/final/final.jsonl"
-max_length = 6144  # prompt + teacher reasoning + critique; longer samples are dropped, not cut
+max_length = 8192  # prompt + teacher reasoning + critique; longer samples are dropped, not cut
+# (Emperor's measurement on Qwen3.5-4B with the Triton kernels: 13.0 GiB peak, 4.3 s a step)
 val_fraction = 0.05
 split_seed = 1337
 
@@ -15,7 +16,13 @@ split_seed = 1337
 r = 32
 alpha = 64
 dropout = 0.05
-target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+# Qwen3.5: full-attention layers (q/k/v/o), Gated DeltaNet layers (in_proj_qkv, in_proj_z,
+# out_proj; the per-head in_proj_a/in_proj_b gates stay frozen) and every MLP.
+target_modules = [
+  "q_proj", "k_proj", "v_proj", "o_proj",
+  "in_proj_qkv", "in_proj_z", "out_proj",
+  "gate_proj", "up_proj", "down_proj",
+]
 
 [train]
 output_dir = "outputs/sft"
@@ -58,9 +65,9 @@ limits = [
   "It cites only the sources it is given and cannot search the web by itself in this version.",
   "Delta-review loops (goal C4) are not yet trained or evaluated.",
 ]
-teacher = "gpt-oss-20b"
+teacher = "gpt-oss-120b"
 teacher_licence = "Apache-2.0"
-judge = "gpt-oss-20b (local, 1-5 on five criteria), plus a deterministic ground-truth check"
+judge = "Qwen3.8-27B (local, another model family than the teacher; 1-5 on five criteria), plus a deterministic ground-truth check"
 filters = [
   "the teacher's reasoning is present; it is trained as the model's thinking, the judge sees only the critique",
   "output parses and validates against the critique schema",
