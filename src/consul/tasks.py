@@ -193,8 +193,10 @@ PLAN_FAMILIES: dict[str, dict] = {
         "steps": {
             "prep": "List the clients of the {system} and tell their owners about the window.",
             "backup": "Export the current {system} configuration and store it with the release.",
-            "change1": "Deploy v2 beside v1 and mirror 5% of traffic to it.",
-            "change2": "Shift traffic to v2 in steps of 25% with a pause after each step.",
+            "change1": "Deploy v2 beside v1 and shadow a copy of 5% of read-only traffic to it "
+            "(responses discarded).",
+            "change2": "Shift live traffic to v2 at 25%, then 50%, then 75%, with a pause after "
+            "each step.",
             "verify": "Run each client's smoke test and compare latency and error dashboards.",
             "release": "Send 100% of traffic to v2 and keep v1 running idle.",
             "rollback": "If a step breaches the error budget, send traffic back to v1 at once.",
@@ -669,14 +671,17 @@ def _report(rng: random.Random, seed: int, clean: bool) -> CritiqueTask:
     guidance = _source(
         rng,
         f"{fill['a']} guidance",
-        f"Vendor guidance for {fill['a']}: use connection pooling and set a request "
-        "timeout on every client.",
+        # The values let claim 3 be checked: pilot 15's critics flagged its concrete settings
+        # as unsupported when the guidance gave none.
+        f"Vendor guidance for {fill['a']}: use connection pooling (pool size 10 to 50) and set "
+        "a request timeout of 10 s or less on every client.",
     )
     sources = [guidance, *_filler_sources(rng, 2)]
     runs = rng.randrange(8, 60)
     before, after = rng.randrange(200, 900), rng.randrange(40, 190)
     claims = [
-        ["Implemented the change in src/core.py and added unit tests.",
+        # Names the job: pilot 15's critics found no claim that the feature itself was built.
+        [f"Implemented the change ({job}) in src/core.py and added unit tests for it.",
          f"Ran `pytest -q`: {runs} passed in {rng.randrange(2, 30)}.{rng.randrange(10)}s."],
         [f"Measured the effect: {before} ms before, {after} ms after on the same input.",
          "Command: `python bench.py --repeat 20`, median of 20 runs, output attached."],
