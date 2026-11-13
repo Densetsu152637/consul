@@ -214,10 +214,10 @@ def test_critiques_that_miss_a_defect_are_dropped_before_judging(tmp_path):
     teacher = Lazy(tasks)
     counts = data.run_generation(tmp_path, teacher)
     assert counts["rejected"] == 1
-    (reject,) = data.iter_records(tmp_path / "rejects")
+    (reject,) = iter_records(tmp_path / "rejects")
     assert (reject["id"], reject["reason"]) == (target.id, "missed_defect")
     data.run_judging(tmp_path, teacher)
-    kept = {s["id"] for s in data.iter_records(tmp_path / "judged") if s["meta"]["judge"]["keep"]}
+    kept = {s["id"] for s in iter_records(tmp_path / "judged") if s["meta"]["judge"]["keep"]}
     assert target.id not in kept and len(kept) == 39
     assert data.build_report(tmp_path)["judge_rejection_reasons"] == {}
 

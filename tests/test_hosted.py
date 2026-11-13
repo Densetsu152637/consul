@@ -70,3 +70,43 @@ def test_consul_hosted_run_writes_critiques_verdicts_and_spend(tmp_path, monkeyp
     assert all(s["meta"]["host"] == "DeepSeek API" for s in judged)
     assert status["spend"]["deepseek"]["requests"] >= 6 and status["usd_per_task"]
     assert "simulator" not in made  # critiques make no tool calls
+
+
+def test_consul_resumes_after_a_pilot_and_skips_its_tasks(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    seen: list[set] = []
+
+    def tasks():
+        rows = (data_dir / "prompts.jsonl").read_text(encoding="utf-8").splitlines()
+        loaded = [CritiqueTask.from_dict(json.loads(r)) for r in rows if r]
+        return {prompts.user_message(t): t for t in loaded}
+
+    class Counting(Fake):
+        def chat(self, messages, **kwargs):
+            if self.role == "teacher" and messages[-1]["content"] in tasks():
+                seen[-1].add(messages[-1]["content"])
+            return super().chat(messages, **kwargs)
+
+    def make_clients(config, ledger, roles, should_stop=lambda: False):
+        return {role: Counting(role, ledger, tasks) for role in roles}
+
+    monkeypatch.setattr(base, "make_clients", make_clients)
+
+    def run(*extra):
+        seen.append(set())
+        code = hosted.main(
+            ["--root", str(tmp_path), "--config", str(ROOT / "configs" / "hosted.toml"),
+             "--data-dir", "data", "--run-dir", "runs/full", "--prompts", "6",
+             "--eval-tasks", "4", "--workers", "2", *extra]
+        )  # fmt: skip
+        assert code == 0
+
+    run("--pilot", "1", "--limit", "2")
+    run()
+    assert len(seen[0]) == 2 and len(seen[1]) == 4 and not seen[0] & seen[1]
+    judged = list(iter_records(data_dir / "judged"))
+    assert len({s["id"] for s in judged}) == len(judged) == 6
+    assert sum(1 for s in judged if s["meta"].get("pilot") == 1) == 2
+    assert all("simulator" not in s["meta"]["models"] for s in judged)
+    assert all({"pipeline_commit", "config_hash", "guidance"} <= set(s["meta"]) for s in judged)
+    assert len(list(iter_records(data_dir / "final"))) == 6

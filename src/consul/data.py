@@ -13,7 +13,8 @@ from emperor.data.build import provenance
 from emperor.data.generate import Chat
 from emperor.data.judge import judge_answer
 from emperor.data.parallel import run_items
-from emperor.data.shards import ShardWriter, done_ids, iter_records, read_jsonl
+from emperor.data.records import current, exclusions, fingerprint
+from emperor.data.shards import ShardWriter, read_jsonl
 from emperor.data.teacher import (
     JUDGE_MODEL,
     TEACHER_LICENCE,
@@ -256,7 +257,8 @@ def run_generation(
     """Critiques for every task not yet done; `workers` tasks at once (hosted teachers)."""
     traces = ShardWriter(data_dir / "traces", "traces")
     rejects = ShardWriter(data_dir / "rejects", "rejects")
-    finished = done_ids(data_dir / "traces") | done_ids(data_dir / "rejects")
+    # The latest record per id counts, and an excluded pilot's tasks are done again.
+    finished = set(current(data_dir / "traces")) | set(current(data_dir / "rejects"))
     todo = [t for t in load_tasks(data_dir / "prompts.jsonl") if t.id not in finished]
     if limit is not None:
         todo = todo[:limit]
@@ -282,7 +284,12 @@ def run_generation(
             traces.write(sample)
             counts["accepted"] += 1
         else:
-            record = {"id": task.id, "task_class": task.task_class, "reason": reason}
+            record = {
+                "id": task.id,
+                "task_class": task.task_class,
+                "reason": reason,
+                **(provenance or {}),
+            }
             if notes:
                 record["draws"] = notes
             rejects.write(record)
@@ -350,18 +357,24 @@ def run_judging(
     model: str = JUDGE_MODEL,
     thinking: bool | None = None,
     workers: int = 1,
+    settings: dict | None = None,
 ) -> dict:
     """`thinking` defaults to the client's `enable_thinking` template option; `workers`
     critiques are judged at once (hosted judges)."""
     if thinking is None:
         thinking = bool(getattr(client, "template_kwargs", {}).get("enable_thinking", True))
     writer = ShardWriter(data_dir / "judged", "judged")
-    finished = done_ids(data_dir / "judged")
+    # With `settings`, a critique judged under other settings is judged again (judge tokens
+    # only) and the latest verdict counts.
+    stamp = fingerprint(settings) if settings else None
+    finished = {
+        i
+        for i, r in current(data_dir / "judged").items()
+        if stamp is None or r.get("meta", {}).get("judge", {}).get("settings") == stamp
+    }
     tasks = {t.id: t for t in load_tasks(data_dir / "prompts.jsonl")}
     counts = {"judged": 0, "kept": 0, "stopped": False}
-    todo = [
-        s for s in iter_records(data_dir / "traces") if s["id"] not in finished and s["id"] in tasks
-    ]
+    todo = [s for i, s in current(data_dir / "traces").items() if i not in finished and i in tasks]
     if limit is not None:
         todo = todo[:limit]
 
@@ -388,6 +401,8 @@ def run_judging(
             judge = parse_judge(judge_answer(reply))
             keep, reasons = decide(truth, judge, threshold=threshold)
             verdict = {**judge, "model": model, "keep": keep, "rejection": reasons}
+            if stamp:
+                verdict["settings"] = stamp
         except (TeacherOutputError, CritiqueParseError) as error:
             verdict = {"keep": False, "rejection": ["judge_unparseable"], "reason": str(error)}
         return truth, verdict  # a TeacherError stops the phase; the id stays to do
@@ -419,7 +434,7 @@ def filter_kept(data_dir: Path) -> dict:
     kept = dropped = no_reasoning = 0
     temporary = target.with_suffix(".tmp")
     with temporary.open("w", encoding="utf-8", newline="\n") as handle:
-        for sample in iter_records(data_dir / "judged"):
+        for sample in current(data_dir / "judged").values():
             judge = sample.get("meta", {}).get("judge", {})
             try:
                 valid = not schema_errors(extract_json_object(sample["messages"][-1]["content"]))
@@ -440,9 +455,9 @@ def filter_kept(data_dir: Path) -> dict:
 
 
 def build_report(data_dir: Path) -> dict:
-    traces = list(iter_records(data_dir / "traces"))
-    rejects = list(iter_records(data_dir / "rejects"))
-    judged = list(iter_records(data_dir / "judged"))
+    traces = list(current(data_dir / "traces").values())
+    rejects = list(current(data_dir / "rejects").values())
+    judged = list(current(data_dir / "judged").values())
     kept_by_class: Counter = Counter()
     judged_by_class: Counter = Counter()
     rejection: Counter = Counter()
@@ -466,6 +481,7 @@ def build_report(data_dir: Path) -> dict:
         "judge_rejection_reasons": dict(rejection.most_common()),
         # Read from the samples, so the card names the models that actually served.
         **provenance([*traces, *judged]),
+        "excluded_pilots": exclusions(data_dir),
     }
 
 

@@ -8,9 +8,10 @@ Consul has no retry rounds: each task already gets up to three draws.
 
 import sys
 
+from emperor.data.records import fingerprint
 from emperor.pipeline import hosted as base
 
-from consul import data
+from consul import data, prompts
 
 MODULE = "consul.pipeline.hosted"
 
@@ -35,7 +36,8 @@ class ConsulHostedRun(base.HostedRun):
             log=base.log.debug,
             teacher_model=self.names["teacher"],
             workers=self.workers("teacher"),
-            provenance={"host": self.host, "licence": self.licence},
+            limit=self.args.limit,
+            provenance={"host": self.host, "licence": self.licence, **self.provenance()},
         )
 
     def phase_judge(self) -> dict:
@@ -48,7 +50,19 @@ class ConsulHostedRun(base.HostedRun):
             log=base.log.debug,
             model=self.names["judge"],
             workers=self.workers("judge"),
+            settings=self.judge_settings(),
         )
+
+    def provenance(self) -> dict:
+        record = super().provenance()
+        record["models"].pop("simulator", None)  # critiques make no tool calls
+        return record
+
+    def guidance(self) -> str:
+        return fingerprint(prompts.teacher_system() + prompts.CONSUL_SYSTEM)
+
+    def rubric(self) -> str:
+        return fingerprint(prompts.JUDGE_SYSTEM)
 
     def phase_filter(self) -> dict:
         return data.filter_kept(self.data_dir)
