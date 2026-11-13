@@ -118,7 +118,7 @@ train = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "emperor", git = "https://github.com/Densetsu152637/emperor?rev=80cbcda00685427ca10df7df6f45e46f79dc10c3" }]
+requires-dist = [{ name = "emperor", git = "https://github.com/Densetsu152637/emperor?rev=95a0bfda6cd11fbe060b3ab10d4867fc4ac049e8" }]
 
 [package.metadata.requires-dev]
 data = [{ name = "httpx", specifier = ">=0.27" }]
@@ -248,7 +248,7 @@ wheels = [
 [[package]]
 name = "emperor"
 version = "0.0.0"
-source = { git = "https://github.com/Densetsu152637/emperor?rev=80cbcda00685427ca10df7df6f45e46f79dc10c3#80cbcda00685427ca10df7df6f45e46f79dc10c3" }
+source = { git = "https://github.com/Densetsu152637/emperor?rev=95a0bfda6cd11fbe060b3ab10d4867fc4ac049e8#95a0bfda6cd11fbe060b3ab10d4867fc4ac049e8" }
 
 [[package]]
 name = "filelock"
