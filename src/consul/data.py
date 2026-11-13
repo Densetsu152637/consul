@@ -191,6 +191,7 @@ def teach_one(
         except TeacherOutputError:  # one unparsable output costs this draw, not the task's rest
             sample, reason = None, "teacher_output_unparsable"
         if sample is not None:
+            sample["meta"]["draws"] = attempt + 1  # which draw passed (what the extra draws buy)
             return sample, None
     return None, reason
 
