@@ -60,6 +60,11 @@ Get-Content runs/hosted-1/status.json                                      # pro
 New-Item runs/hosted-1/STOP                                                 # stop cleanly
 ```
 
+Rule: DeepSeek generation runs only in its discounted off-peak hours (outside 01:00-04:00 and
+06:00-10:00 UTC on weekdays; all weekend). That is the default: at a peak boundary requests in
+flight finish, no new DeepSeek call starts, and the run resumes by itself (`status.json` shows
+phase `waiting_offpeak` and `resume_at_utc`). Peak hours need the explicit `--allow-peak`.
+
 The local fallback below (`pipeline`) runs everything on this machine: the teacher
 (gpt-oss-120b, Apache-2.0) and the judge (Qwen3.8-27B) are local open-weight models behind
 `llama-server`, and no Claude, Anthropic or OpenAI API generates or judges data either way.

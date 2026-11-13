@@ -44,7 +44,7 @@ default-groups = ["dev", "data", "hosted"]
 
 [tool.uv.sources]
 # Pinned to emperor's feat/hosted-models branch (hosted clients and runner); re-pin to its merge commit.
-emperor = { git = "https://github.com/Densetsu152637/emperor", rev = "225248e25af7c7a935e8cf3e175eb3da426bdd8e" }
+emperor = { git = "https://github.com/Densetsu152637/emperor", rev = "ceedf57548375a181881475f84436d3f275c73f3" }
 torch = { index = "pytorch-cu128", marker = "sys_platform == 'win32' or sys_platform == 'linux'" }
 
 [[tool.uv.index]]
